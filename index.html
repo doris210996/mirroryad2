@@ -126,6 +126,38 @@
         .form-group input::placeholder { color: rgba(255,255,255,0.25); }
         .form-group input[type="number"] { direction: ltr; text-align: right; }
 
+        /* ── Custom Autocomplete ── */
+        .ac-wrapper { position: relative; }
+        .ac-dropdown {
+            display: none;
+            position: absolute;
+            top: 100%;
+            right: 0;
+            left: 0;
+            z-index: 100;
+            max-height: 200px;
+            overflow-y: auto;
+            background: #1f2937;
+            border: 1px solid rgba(255,165,0,0.25);
+            border-top: none;
+            border-radius: 0 0 10px 10px;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+        }
+        .ac-dropdown.open { display: block; }
+        .ac-option {
+            padding: 8px 14px;
+            font-size: 0.88rem;
+            color: #f9fafb;
+            cursor: pointer;
+            transition: background 0.15s;
+        }
+        .ac-option:hover,
+        .ac-option.active {
+            background: rgba(255,165,0,0.15);
+        }
+        .ac-dropdown::-webkit-scrollbar { width: 6px; }
+        .ac-dropdown::-webkit-scrollbar-thumb { background: rgba(255,165,0,0.3); border-radius: 3px; }
+
         /* ── Action Buttons ── */
         .re-actions {
             display: flex;
@@ -375,15 +407,15 @@
                             <option value="forsale">מכירה</option>
                         </select>
                     </div>
-                    <div class="form-group">
+                    <div class="form-group ac-wrapper">
                         <label for="reSettlement">עיר</label>
-                        <input type="text" id="reSettlement" list="reCityList" placeholder="הקלידו עיר...">
-                        <datalist id="reCityList"></datalist>
+                        <input type="text" id="reSettlement" placeholder="הקלידו עיר..." autocomplete="off">
+                        <div id="reCityDropdown" class="ac-dropdown"></div>
                     </div>
-                    <div class="form-group">
+                    <div class="form-group ac-wrapper">
                         <label for="reNeighborhood">שכונה</label>
-                        <input type="text" id="reNeighborhood" list="reNeighborhoodList" placeholder="הכל">
-                        <datalist id="reNeighborhoodList"></datalist>
+                        <input type="text" id="reNeighborhood" placeholder="הכל" autocomplete="off">
+                        <div id="reNeighborhoodDropdown" class="ac-dropdown"></div>
                     </div>
                 </div>
                 <div class="form-row">
@@ -448,20 +480,86 @@
             </div>`;
         }
 
-        function reUpdateNeighborhoodList(neighborhoods) {
-            const dl = document.getElementById('reNeighborhoodList');
-            dl.innerHTML = (neighborhoods || []).map(n => `<option value="${n}">`).join('');
+        // ── Custom Autocomplete ──
+        let _cityList = [];
+        let _neighborhoodList = [];
+
+        function setupAutocomplete(inputId, dropdownId, getList) {
+            const input = document.getElementById(inputId);
+            const dropdown = document.getElementById(dropdownId);
+            let activeIdx = -1;
+
+            function render(filter) {
+                const list = getList();
+                const q = (filter || '').trim();
+                const matches = q ? list.filter(s => s.includes(q)) : list;
+                if (matches.length === 0) { dropdown.classList.remove('open'); return; }
+                dropdown.innerHTML = matches.map((s, i) =>
+                    `<div class="ac-option" data-val="${s}">${s}</div>`
+                ).join('');
+                dropdown.classList.add('open');
+                activeIdx = -1;
+            }
+
+            input.addEventListener('focus', () => render(input.value));
+            input.addEventListener('input', () => render(input.value));
+
+            dropdown.addEventListener('mousedown', e => {
+                const opt = e.target.closest('.ac-option');
+                if (opt) {
+                    input.value = opt.dataset.val;
+                    dropdown.classList.remove('open');
+                    input.dispatchEvent(new Event('change'));
+                }
+            });
+
+            input.addEventListener('keydown', e => {
+                const opts = dropdown.querySelectorAll('.ac-option');
+                if (!opts.length || !dropdown.classList.contains('open')) return;
+                if (e.key === 'ArrowDown') {
+                    e.preventDefault();
+                    activeIdx = Math.min(activeIdx + 1, opts.length - 1);
+                } else if (e.key === 'ArrowUp') {
+                    e.preventDefault();
+                    activeIdx = Math.max(activeIdx - 1, 0);
+                } else if (e.key === 'Enter' && activeIdx >= 0) {
+                    e.preventDefault();
+                    input.value = opts[activeIdx].dataset.val;
+                    dropdown.classList.remove('open');
+                    input.dispatchEvent(new Event('change'));
+                    return;
+                } else if (e.key === 'Escape') {
+                    dropdown.classList.remove('open'); return;
+                } else return;
+                opts.forEach(o => o.classList.remove('active'));
+                if (activeIdx >= 0) { opts[activeIdx].classList.add('active'); opts[activeIdx].scrollIntoView({block:'nearest'}); }
+            });
+
+            input.addEventListener('blur', () => {
+                setTimeout(() => dropdown.classList.remove('open'), 150);
+            });
         }
 
-        // Load city list on page load
+        setupAutocomplete('reSettlement', 'reCityDropdown', () => _cityList);
+        setupAutocomplete('reNeighborhood', 'reNeighborhoodDropdown', () => _neighborhoodList);
+
+        // Load cities on page load
         (async function loadCities() {
             try {
                 const res = await fetch('/api/cities');
-                const cities = await res.json();
-                const dl = document.getElementById('reCityList');
-                dl.innerHTML = cities.map(c => `<option value="${c}">`).join('');
+                _cityList = await res.json();
             } catch (e) { /* ignore */ }
         })();
+
+        // Clear neighborhoods when city changes
+        document.getElementById('reSettlement').addEventListener('change', () => {
+            _neighborhoodList = [];
+            document.getElementById('reNeighborhood').value = '';
+        });
+
+        function reUpdateNeighborhoodList(neighborhoods) {
+            _neighborhoodList = neighborhoods || [];
+        }
 
         function reRenderItems(items) {
             const container = document.getElementById('reResults');
