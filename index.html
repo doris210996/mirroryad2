@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real Estate Search</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', sans-serif;
+            min-height: 100vh;
+            background: #0f0c29;
+            color: white;
+            overflow-x: hidden;
+        }
+        canvas { position: fixed; top: 0; left: 0; z-index: 0; }
+        .container {
+            position: relative;
+            z-index: 1;
+            max-width: 700px;
+            margin: 0 auto;
+            padding: 40px 20px;
+            text-align: center;
+        }
+        h1 {
+            font-size: 2.5rem;
+            margin-bottom: 8px;
+            background: linear-gradient(90deg, #f093fb, #f5576c, #4facfe, #00f2fe);
+            background-size: 300%;
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            animation: gradient 4s ease infinite;
+        }
+        @keyframes gradient {
+            0%, 100% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
+        }
+        .subtitle { opacity: 0.6; margin-bottom: 32px; }
+        .card {
+            background: rgba(255,255,255,0.08);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255,255,255,0.12);
+            border-radius: 16px;
+            padding: 24px;
+            margin-bottom: 20px;
+            transition: transform 0.2s;
+        }
+        .card:hover { transform: translateY(-2px); }
+        .card h2 { font-size: 1.1rem; margin-bottom: 12px; }
+        button {
+            padding: 10px 18px;
+            border-radius: 10px;
+            border: none;
+            background: linear-gradient(135deg, #f093fb, #f5576c);
+            color: white;
+            font-size: 0.95rem;
+            cursor: pointer;
+            transition: opacity 0.2s;
+        }
+        button:hover { opacity: 0.85; }
+        .re-form { display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; }
+        .re-form .row { display: flex; gap: 8px; }
+        .re-form select, .re-form input {
+            flex: 1;
+            padding: 10px 14px;
+            border-radius: 10px;
+            border: 1px solid rgba(255,255,255,0.2);
+            background: rgba(255,255,255,0.06);
+            color: white;
+            font-size: 0.95rem;
+            outline: none;
+        }
+        .re-form select option { background: #1a1a2e; color: white; }
+        .re-form input::placeholder { color: rgba(255,255,255,0.3); }
+        .re-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; margin-bottom: 14px; }
+        .re-actions button.cancel { background: linear-gradient(135deg, #666, #444); }
+        .re-actions button.refresh-active { background: linear-gradient(135deg, #00b09b, #96c93d); }
+        .re-results { max-height: 500px; overflow-y: auto; }
+        .re-item {
+            background: rgba(255,255,255,0.05);
+            border-radius: 10px;
+            padding: 14px;
+            margin-bottom: 8px;
+            text-align: left;
+            font-size: 0.85rem;
+            line-height: 1.6;
+            position: relative;
+        }
+        .re-item .badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 6px;
+            font-size: 0.7rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            margin-bottom: 6px;
+        }
+        .re-item .badge.new { background: #27ae60; }
+        .re-item .badge.updated { background: #2980b9; }
+        .re-item .re-price { font-size: 1.1rem; font-weight: 600; color: #f5576c; margin-top: 4px; }
+        .re-status { text-align: center; opacity: 0.5; padding: 12px; font-size: 0.9rem; }
+    </style>
+</head>
+<body>
+    <canvas id="bg"></canvas>
+    <div class="container">
+        <h1>Real Estate Search</h1>
+        <p class="subtitle">Yad2 property finder</p>
+
+        <div class="card">
+            <h2>Search Properties</h2>
+            <div class="re-form">
+                <div class="row">
+                    <select id="reDealType">
+                        <option value="rent">Rent</option>
+                        <option value="forsale">Sale</option>
+                    </select>
+                    <select id="reSettlement">
+                        <option value="תל אביב">תל אביב</option>
+                        <option value="ירושלים">ירושלים</option>
+                        <option value="חיפה">חיפה</option>
+                        <option value="באר שבע">באר שבע</option>
+                        <option value="ראשון לציון">ראשון לציון</option>
+                        <option value="אשדוד">אשדוד</option>
+                        <option value="נתניה">נתניה</option>
+                        <option value="חולון">חולון</option>
+                        <option value="בני ברק">בני ברק</option>
+                        <option value="רמת גן">רמת גן</option>
+                        <option value="אשקלון">אשקלון</option>
+                        <option value="בת ים">בת ים</option>
+                        <option value="הרצליה">הרצליה</option>
+                        <option value="כפר סבא">כפר סבא</option>
+                        <option value="רעננה">רעננה</option>
+                        <option value="מודיעין">מודיעין</option>
+                        <option value="רחובות">רחובות</option>
+                        <option value="גבעתיים">גבעתיים</option>
+                        <option value="הוד השרון">הוד השרון</option>
+                        <option value="רמת השרון">רמת השרון</option>
+                        <option value="אילת">אילת</option>
+                    </select>
+                </div>
+                <div class="row">
+                    <input type="number" id="reMinPrice" placeholder="Min price" value="0">
+                    <input type="number" id="reMaxPrice" placeholder="Max price" value="10000">
+                </div>
+            </div>
+            <div class="re-actions">
+                <button onclick="reSearch()">Search</button>
+                <button id="reRefreshBtn" onclick="reToggleRefresh()">Auto-Refresh: OFF</button>
+                <button class="cancel" onclick="reCancel()">Cancel</button>
+            </div>
+            <div id="reResults">
+                <div class="re-status">Enter search criteria and click Search</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let reSearchId = null;
+        let reRefreshInterval = null;
+
+        function reRenderItems(items) {
+            const container = document.getElementById('reResults');
+            if (!items || items.length === 0) {
+                container.innerHTML = '<div class="re-status">No results found</div>';
+                return;
+            }
+            container.innerHTML = items.map(item => {
+                let badge = '';
+                if (item.status === 'new') badge = '<span class="badge new">New</span> ';
+                else if (item.status === 'updated') badge = '<span class="badge updated">Updated</span> ';
+                return `<div class="re-item">
+                    ${badge}
+                    <strong>${item.estateType || ''}</strong> — ${item.street || ''}
+                    ${item.neighborhood ? ', ' + item.neighborhood : ''}, ${item.settlement || ''}<br>
+                    Rooms: ${item.rooms ?? '—'} | Floor: ${item.floor ?? '—'} | ${item.squareMeters ?? '—'} sqm<br>
+                    <span style="opacity:0.5">Updated: ${item.updatedAt || '—'}</span>
+                    <div class="re-price">${item.price || '—'}</div>
+                </div>`;
+            }).join('');
+        }
+
+        async function reSearch() {
+            reStopRefresh();
+
+            const dealType   = document.getElementById('reDealType').value;
+            const settlement = document.getElementById('reSettlement').value;
+            const minPrice   = document.getElementById('reMinPrice').value || '0';
+            const maxPrice   = document.getElementById('reMaxPrice').value || '10000000';
+
+            document.getElementById('reResults').innerHTML = '<div class="re-status">Searching...</div>';
+
+            try {
+                const params = new URLSearchParams({ dealType, settlement, minPrice, maxPrice, page: '1' });
+                const res = await fetch('/api/realestate/search?' + params);
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'Search failed');
+                reSearchId = data.search_id;
+                reRenderItems(data.items);
+            } catch (e) {
+                document.getElementById('reResults').innerHTML = '<div class="re-status">Error: ' + e.message + '</div>';
+            }
+        }
+
+        async function reUpdate() {
+            if (!reSearchId) return;
+            try {
+                const res = await fetch('/api/realestate/update?searchId=' + encodeURIComponent(reSearchId));
+                const data = await res.json();
+                if (!res.ok) return;
+                reRenderItems(data.items);
+            } catch (e) { /* silently ignore polling errors */ }
+        }
+
+        function reToggleRefresh() {
+            const btn = document.getElementById('reRefreshBtn');
+            if (reRefreshInterval) {
+                reStopRefresh();
+            } else {
+                if (!reSearchId) { alert('Run a search first'); return; }
+                reRefreshInterval = setInterval(reUpdate, 10000);
+                btn.textContent = 'Auto-Refresh: ON';
+                btn.classList.add('refresh-active');
+            }
+        }
+
+        function reStopRefresh() {
+            if (reRefreshInterval) { clearInterval(reRefreshInterval); reRefreshInterval = null; }
+            const btn = document.getElementById('reRefreshBtn');
+            btn.textContent = 'Auto-Refresh: OFF';
+            btn.classList.remove('refresh-active');
+        }
+
+        async function reCancel() {
+            reStopRefresh();
+            if (reSearchId) {
+                try {
+                    await fetch('/api/realestate/cancel?searchId=' + encodeURIComponent(reSearchId), { method: 'DELETE' });
+                } catch (e) { /* ignore */ }
+                reSearchId = null;
+            }
+            document.getElementById('reResults').innerHTML = '<div class="re-status">Search cancelled</div>';
+        }
+
+        // Particle background
+        const canvas = document.getElementById('bg');
+        const ctx = canvas.getContext('2d');
+        let particles = [];
+        function resize() { canvas.width = innerWidth; canvas.height = innerHeight; }
+        resize();
+        addEventListener('resize', resize);
+
+        for (let i = 0; i < 80; i++) {
+            particles.push({
+                x: Math.random() * innerWidth,
+                y: Math.random() * innerHeight,
+                r: Math.random() * 2 + 0.5,
+                dx: (Math.random() - 0.5) * 0.4,
+                dy: (Math.random() - 0.5) * 0.4,
+                o: Math.random() * 0.4 + 0.1
+            });
+        }
+
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            particles.forEach(p => {
+                p.x += p.dx;
+                p.y += p.dy;
+                if (p.x < 0) p.x = canvas.width;
+                if (p.x > canvas.width) p.x = 0;
+                if (p.y < 0) p.y = canvas.height;
+                if (p.y > canvas.height) p.y = 0;
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+                ctx.fillStyle = `rgba(255,255,255,${p.o})`;
+                ctx.fill();
+            });
+            for (let i = 0; i < particles.length; i++) {
+                for (let j = i + 1; j < particles.length; j++) {
+                    const dx = particles[i].x - particles[j].x;
+                    const dy = particles[i].y - particles[j].y;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+                    if (dist < 120) {
+                        ctx.beginPath();
+                        ctx.moveTo(particles[i].x, particles[i].y);
+                        ctx.lineTo(particles[j].x, particles[j].y);
+                        ctx.strokeStyle = `rgba(255,255,255,${0.06 * (1 - dist / 120)})`;
+                        ctx.stroke();
+                    }
+                }
+            }
+            requestAnimationFrame(draw);
+        }
+        draw();
+    </script>
+</body>
+</html>
