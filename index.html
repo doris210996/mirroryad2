@@ -536,7 +536,7 @@
             });
 
             input.addEventListener('blur', () => {
-                setTimeout(() => dropdown.classList.remove('open'), 150);
+                setTimeout(() => dropdown.classList.remove('open'), 250);
             });
         }
 
@@ -559,6 +559,17 @@
 
         function reUpdateNeighborhoodList(neighborhoods) {
             _neighborhoodList = neighborhoods || [];
+            // Auto-show dropdown after search populates neighborhoods
+            if (_neighborhoodList.length > 0) {
+                const input = document.getElementById('reNeighborhood');
+                const dropdown = document.getElementById('reNeighborhoodDropdown');
+                const q = (input.value || '').trim();
+                const matches = q ? _neighborhoodList.filter(s => s.includes(q)) : _neighborhoodList;
+                if (matches.length) {
+                    dropdown.innerHTML = matches.map(s => `<div class="ac-option" data-val="${s}">${s}</div>`).join('');
+                    dropdown.classList.add('open');
+                }
+            }
         }
 
         function reRenderItems(items) {
