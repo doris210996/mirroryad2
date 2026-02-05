@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="he" dir="rtl">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -16,6 +16,7 @@
             background: #111827;
             color: #f9fafb;
             overflow-x: hidden;
+            direction: rtl;
         }
 
         canvas { position: fixed; top: 0; left: 0; z-index: 0; pointer-events: none; }
@@ -47,6 +48,7 @@
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
             background-clip: text;
+            direction: ltr;
         }
         .header .subtitle {
             font-size: 0.8rem;
@@ -74,9 +76,6 @@
             margin-bottom: 24px;
             backdrop-filter: blur(8px);
         }
-        .search-panel h2 {
-            display: none;
-        }
 
         /* ── Form ── */
         .re-form {
@@ -94,13 +93,11 @@
             display: flex;
             flex-direction: column;
             flex: 1;
-            min-width: 140px;
+            min-width: 130px;
         }
         .form-group label {
-            font-size: 0.7rem;
+            font-size: 0.72rem;
             font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.8px;
             color: #9ca3af;
             margin-bottom: 6px;
         }
@@ -115,6 +112,7 @@
             font-family: 'Inter', sans-serif;
             outline: none;
             transition: border-color 0.2s, box-shadow 0.2s;
+            direction: rtl;
         }
         .form-group select:focus,
         .form-group input:focus {
@@ -126,6 +124,7 @@
             color: #f9fafb;
         }
         .form-group input::placeholder { color: rgba(255,255,255,0.25); }
+        .form-group input[type="number"] { direction: ltr; text-align: right; }
 
         /* ── Action Buttons ── */
         .re-actions {
@@ -143,12 +142,11 @@
             font-family: 'Inter', sans-serif;
             cursor: pointer;
             transition: all 0.2s;
-            letter-spacing: 0.2px;
         }
         button.search-btn {
             background: linear-gradient(135deg, #FF6B00, #FF9500);
             color: white;
-            min-width: 110px;
+            min-width: 100px;
         }
         button.search-btn:hover {
             box-shadow: 0 4px 16px rgba(255,107,0,0.35);
@@ -178,18 +176,42 @@
             color: #ef4444;
         }
 
+        /* ── Info Bar ── */
+        .re-info-bar {
+            display: flex;
+            gap: 16px;
+            flex-wrap: wrap;
+            align-items: center;
+            padding: 10px 16px;
+            margin-bottom: 12px;
+            background: rgba(255,165,0,0.06);
+            border: 1px solid rgba(255,165,0,0.1);
+            border-radius: 10px;
+            font-size: 0.78rem;
+            color: #9ca3af;
+        }
+        .re-info-bar span {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+        .re-info-bar .info-value {
+            color: #FFB347;
+            font-weight: 600;
+        }
+
         /* ── Results ── */
         .re-results {
             max-height: 600px;
             overflow-y: auto;
-            padding-right: 4px;
+            padding-left: 4px;
         }
 
         /* ── Listing Card ── */
         .re-item {
             background: rgba(255,255,255,0.04);
             border: 1px solid rgba(255,165,0,0.06);
-            border-left: 3px solid transparent;
+            border-right: 3px solid transparent;
             border-radius: 12px;
             padding: 18px 20px;
             margin-bottom: 10px;
@@ -202,7 +224,7 @@
         .re-item:hover {
             transform: translateY(-2px);
             box-shadow: 0 8px 24px rgba(0,0,0,0.2);
-            border-left-color: #FF6B00;
+            border-right-color: #FF6B00;
             background: rgba(255,255,255,0.06);
         }
 
@@ -221,7 +243,6 @@
             border-radius: 20px;
             font-size: 0.65rem;
             font-weight: 700;
-            text-transform: uppercase;
             letter-spacing: 0.5px;
         }
         .badge.new { background: rgba(16,185,129,0.2); color: #10b981; }
@@ -258,7 +279,7 @@
         .re-item-price-col {
             display: flex;
             flex-direction: column;
-            align-items: flex-end;
+            align-items: flex-start;
             flex-shrink: 0;
         }
 
@@ -270,6 +291,7 @@
             -webkit-text-fill-color: transparent;
             background-clip: text;
             white-space: nowrap;
+            direction: ltr;
         }
 
         /* ── Stats Bar ── */
@@ -289,6 +311,7 @@
             background: rgba(255,255,255,0.06);
             color: #9ca3af;
             white-space: nowrap;
+            direction: ltr;
         }
         .stat.deal-good {
             background: rgba(16,185,129,0.15);
@@ -338,7 +361,7 @@
 
     <header class="header">
         <h1>Yad 1.5</h1>
-        <p class="subtitle">Smart Filtered Real Estate Powered by Cutting Edge AI Tools</p>
+        <p class="subtitle">חיפוש נדל"ן חכם עם סינון מתקדם</p>
     </header>
 
     <div class="container">
@@ -346,14 +369,14 @@
             <div class="re-form">
                 <div class="form-row">
                     <div class="form-group">
-                        <label for="reDealType">Deal Type</label>
+                        <label for="reDealType">סוג עסקה</label>
                         <select id="reDealType">
-                            <option value="rent">Rent</option>
-                            <option value="forsale">Sale</option>
+                            <option value="rent">השכרה</option>
+                            <option value="forsale">מכירה</option>
                         </select>
                     </div>
                     <div class="form-group">
-                        <label for="reSettlement">City</label>
+                        <label for="reSettlement">עיר</label>
                         <select id="reSettlement">
                             <option value="תל אביב">תל אביב</option>
                             <option value="ירושלים">ירושלים</option>
@@ -379,61 +402,89 @@
                         </select>
                     </div>
                     <div class="form-group">
-                        <label for="reNeighborhood">Neighborhood</label>
-                        <input type="text" id="reNeighborhood" placeholder="All">
+                        <label for="reNeighborhood">שכונה</label>
+                        <input type="text" id="reNeighborhood" list="reNeighborhoodList" placeholder="הכל" autocomplete="off">
+                        <datalist id="reNeighborhoodList"></datalist>
                     </div>
                 </div>
                 <div class="form-row">
                     <div class="form-group">
-                        <label for="reMinPrice">Min Price</label>
+                        <label for="reMinPrice">מחיר מינימום</label>
                         <input type="number" id="reMinPrice" placeholder="0" value="0">
                     </div>
                     <div class="form-group">
-                        <label for="reMaxPrice">Max Price</label>
+                        <label for="reMaxPrice">מחיר מקסימום</label>
                         <input type="number" id="reMaxPrice" placeholder="10,000" value="10000">
                     </div>
                     <div class="form-group">
-                        <label for="reMinSqm">Min sqm</label>
+                        <label for="reMinSqm">מ"ר מינימום</label>
                         <input type="number" id="reMinSqm" placeholder="0">
                     </div>
                     <div class="form-group">
-                        <label for="reMaxSqm">Max sqm</label>
-                        <input type="number" id="reMaxSqm" placeholder="Any">
+                        <label for="reMaxSqm">מ"ר מקסימום</label>
+                        <input type="number" id="reMaxSqm" placeholder="ללא הגבלה">
                     </div>
                     <div class="form-group" style="justify-content: flex-end;">
                         <label>&nbsp;</label>
-                        <button class="search-btn" onclick="reSearch()">Search</button>
+                        <button class="search-btn" onclick="reSearch()">חיפוש</button>
                     </div>
                 </div>
             </div>
             <div class="re-actions">
-                <button id="reRefreshBtn" class="refresh-btn" onclick="reToggleRefresh()">Auto-Refresh: OFF</button>
-                <button class="cancel" onclick="reCancel()">Cancel</button>
+                <button id="reRefreshBtn" class="refresh-btn" onclick="reToggleRefresh()">רענון אוטומטי: כבוי</button>
+                <button class="cancel" onclick="reCancel()">ביטול</button>
             </div>
         </div>
 
+        <div id="reInfoBar"></div>
+
         <div id="reResults" class="re-results">
-            <div class="re-status">Enter search criteria and click Search</div>
+            <div class="re-status">הזינו קריטריונים ולחצו חיפוש</div>
         </div>
     </div>
 
     <script>
         let reSearchId = null;
         let reRefreshInterval = null;
-
         let reStatsScope = 'page';
+
+        function reUpdateInfoBar(data) {
+            const bar = document.getElementById('reInfoBar');
+            if (!data || !data.items || data.items.length === 0) {
+                bar.innerHTML = '';
+                return;
+            }
+            const fetchTime = data.fetchTime != null ? data.fetchTime + ' שניות' : '\u2014';
+            const totalItems = data.items.length;
+            const avgCount = data.avgSampleCount || 0;
+            const totalPages = data.total_pages || '\u2014';
+            const scope = data.statsScope === 'city-wide' ? 'כלל העיר' : 'כל התוצאות';
+
+            bar.innerHTML = `<div class="re-info-bar">
+                <span>זמן שליפה: <span class="info-value">${fetchTime}</span></span>
+                <span>תוצאות: <span class="info-value">${totalItems}</span></span>
+                <span>עמודים שנסרקו: <span class="info-value">${Math.min(totalPages, 20)} / ${totalPages}</span></span>
+                <span>ממוצע מחושב על: <span class="info-value">${avgCount} נכסים</span></span>
+                <span>מקור: <span class="info-value">${scope}</span></span>
+            </div>`;
+        }
+
+        function reUpdateNeighborhoodList(neighborhoods) {
+            const dl = document.getElementById('reNeighborhoodList');
+            dl.innerHTML = (neighborhoods || []).map(n => `<option value="${n}">`).join('');
+        }
 
         function reRenderItems(items) {
             const container = document.getElementById('reResults');
             if (!items || items.length === 0) {
-                container.innerHTML = '<div class="re-status">No results found</div>';
+                container.innerHTML = '<div class="re-status">לא נמצאו תוצאות</div>';
                 return;
             }
-            const scopeLabel = reStatsScope === 'city-wide' ? '(city-wide)' : '(all results)';
+            const scopeLabel = reStatsScope === 'city-wide' ? '(כלל העיר)' : '(כל התוצאות)';
             container.innerHTML = items.map(item => {
                 let badgeHtml = '';
-                if (item.status === 'new') badgeHtml = '<div class="re-item-badges"><span class="badge new">New</span></div>';
-                else if (item.status === 'updated') badgeHtml = '<div class="re-item-badges"><span class="badge updated">Updated</span></div>';
+                if (item.status === 'new') badgeHtml = '<div class="re-item-badges"><span class="badge new">חדש</span></div>';
+                else if (item.status === 'updated') badgeHtml = '<div class="re-item-badges"><span class="badge updated">עודכן</span></div>';
 
                 let statsHtml = '';
                 if (item.pricePerSqm) {
@@ -442,10 +493,10 @@
                     let dealClass = '';
                     if (avg) dealClass = item.pricePerSqm <= avg ? 'deal-good' : 'deal-bad';
                     statsHtml = `<div class="re-stats">
-                        <span class="stat ${dealClass}">${fmt(item.pricePerSqm)} /sqm</span>
-                        ${item.avgPricePerSqmFiltered ? `<span class="stat">Filtered avg: ${fmt(item.avgPricePerSqmFiltered)} /sqm</span>` : ''}
-                        ${item.avgPricePerSqmNeighborhood ? `<span class="stat">Nbhd avg ${scopeLabel}: ${fmt(item.avgPricePerSqmNeighborhood)} /sqm</span>` : ''}
-                        ${item.avgPricePerSqmCity ? `<span class="stat">City avg ${scopeLabel}: ${fmt(item.avgPricePerSqmCity)} /sqm</span>` : ''}
+                        <span class="stat ${dealClass}">${fmt(item.pricePerSqm)} /מ"ר</span>
+                        ${item.avgPricePerSqmFiltered ? `<span class="stat">ממוצע מסונן: ${fmt(item.avgPricePerSqmFiltered)} /מ"ר</span>` : ''}
+                        ${item.avgPricePerSqmNeighborhood ? `<span class="stat">ממוצע שכונה ${scopeLabel}: ${fmt(item.avgPricePerSqmNeighborhood)} /מ"ר</span>` : ''}
+                        ${item.avgPricePerSqmCity ? `<span class="stat">ממוצע עיר ${scopeLabel}: ${fmt(item.avgPricePerSqmCity)} /מ"ר</span>` : ''}
                     </div>`;
                 }
 
@@ -456,14 +507,14 @@
                 return `<div class="re-item">
                     <div class="re-item-info">
                         ${badgeHtml}
-                        <div class="re-item-type">${item.estateType || 'Property'}</div>
+                        <div class="re-item-type">${item.estateType || 'נכס'}</div>
                         <div class="re-item-address">${street}${neighborhood}, ${settlement}</div>
                         <div class="re-item-details">
-                            <span>Rooms: ${item.rooms ?? '\u2014'}</span>
-                            <span>Floor: ${item.floor ?? '\u2014'}</span>
-                            <span>${item.squareMeters ?? '\u2014'} sqm</span>
+                            <span>חדרים: ${item.rooms ?? '\u2014'}</span>
+                            <span>קומה: ${item.floor ?? '\u2014'}</span>
+                            <span>${item.squareMeters ?? '\u2014'} מ"ר</span>
                         </div>
-                        <div class="re-item-updated">Updated: ${item.updatedAt || '\u2014'}</div>
+                        <div class="re-item-updated">עודכן: ${item.updatedAt || '\u2014'}</div>
                         ${statsHtml}
                     </div>
                     <div class="re-item-price-col">
@@ -484,7 +535,8 @@
             const minSqm       = document.getElementById('reMinSqm').value;
             const maxSqm       = document.getElementById('reMaxSqm').value;
 
-            document.getElementById('reResults').innerHTML = '<div class="re-status loading"><div class="spinner"></div>Searching...</div>';
+            document.getElementById('reResults').innerHTML = '<div class="re-status loading"><div class="spinner"></div>מחפש...</div>';
+            document.getElementById('reInfoBar').innerHTML = '';
 
             try {
                 const params = new URLSearchParams({ dealType, settlement, minPrice, maxPrice });
@@ -493,12 +545,14 @@
                 if (maxSqm) params.set('maxSqm', maxSqm);
                 const res = await fetch('/api/realestate/search?' + params);
                 const data = await res.json();
-                if (!res.ok) throw new Error(data.error || 'Search failed');
+                if (!res.ok) throw new Error(data.error || 'החיפוש נכשל');
                 reSearchId = data.search_id;
                 reStatsScope = data.statsScope || 'page';
+                reUpdateInfoBar(data);
+                reUpdateNeighborhoodList(data.neighborhoods);
                 reRenderItems(data.items);
             } catch (e) {
-                document.getElementById('reResults').innerHTML = '<div class="re-status">Error: ' + e.message + '</div>';
+                document.getElementById('reResults').innerHTML = '<div class="re-status">שגיאה: ' + e.message + '</div>';
             }
         }
 
@@ -518,9 +572,9 @@
             if (reRefreshInterval) {
                 reStopRefresh();
             } else {
-                if (!reSearchId) { alert('Run a search first'); return; }
+                if (!reSearchId) { alert('יש להריץ חיפוש קודם'); return; }
                 reRefreshInterval = setInterval(reUpdate, 10000);
-                btn.textContent = 'Auto-Refresh: ON';
+                btn.textContent = 'רענון אוטומטי: פעיל';
                 btn.classList.add('refresh-active');
             }
         }
@@ -528,7 +582,7 @@
         function reStopRefresh() {
             if (reRefreshInterval) { clearInterval(reRefreshInterval); reRefreshInterval = null; }
             const btn = document.getElementById('reRefreshBtn');
-            btn.textContent = 'Auto-Refresh: OFF';
+            btn.textContent = 'רענון אוטומטי: כבוי';
             btn.classList.remove('refresh-active');
         }
 
@@ -540,7 +594,8 @@
                 } catch (e) { /* ignore */ }
                 reSearchId = null;
             }
-            document.getElementById('reResults').innerHTML = '<div class="re-status">Search cancelled</div>';
+            document.getElementById('reResults').innerHTML = '<div class="re-status">החיפוש בוטל</div>';
+            document.getElementById('reInfoBar').innerHTML = '';
         }
 
         // Particle background — orange/amber theme
@@ -552,7 +607,7 @@
         addEventListener('resize', resize);
 
         for (let i = 0; i < 80; i++) {
-            const hue = Math.random() > 0.5 ? 0 : 1; // 0 = orange, 1 = amber
+            const hue = Math.random() > 0.5 ? 0 : 1;
             particles.push({
                 x: Math.random() * innerWidth,
                 y: Math.random() * innerHeight,

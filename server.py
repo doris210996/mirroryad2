@@ -579,6 +579,7 @@ def realestate_search():
     if not city_code:
         return jsonify({"error": f"Settlement '{settlement}' not found. Use a city code or one of: {', '.join(sorted(CITY_CODES.keys()))}"}), 404
 
+    t_start = time.time()
     try:
         items, total_pages = fetch_all_yad2_pages(deal_type, city_code, min_price, max_price)
     except RuntimeError as e:
@@ -586,11 +587,21 @@ def realestate_search():
     except Exception as e:
         return jsonify({"error": f"Failed to fetch data from Yad2: {e}"}), 502
 
+    raw_count = len(items)
     items = remove_duplicates(items)
     items = filter_items(items, min_sqm=min_sqm, max_sqm=max_sqm, neighborhood=neighborhood)
 
     cached_avgs = _get_or_start_avg_cache(deal_type, city_code)
     items = compute_price_stats(items, cached_avgs)
+    fetch_time = round(time.time() - t_start, 1)
+
+    # Count items that contributed to the filtered average
+    avg_sample_count = sum(1 for it in items if it.get("pricePerSqm"))
+
+    # Collect unique neighborhoods for autocomplete
+    neighborhoods = sorted(set(
+        it.get("neighborhood", "") for it in items if it.get("neighborhood")
+    ))
 
     search_id = ""
     if searches_collection is not None:
@@ -621,6 +632,9 @@ def realestate_search():
         "items": items,
         "total_pages": total_pages,
         "statsScope": stats_scope,
+        "fetchTime": fetch_time,
+        "avgSampleCount": avg_sample_count,
+        "neighborhoods": neighborhoods,
     })
 
 
