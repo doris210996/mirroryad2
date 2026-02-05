@@ -554,6 +554,11 @@ def index():
     return send_from_directory(".", "index.html")
 
 
+@app.route("/api/cities")
+def api_cities():
+    return jsonify(sorted(CITY_CODES.keys()))
+
+
 @app.route("/api/realestate/search")
 def realestate_search():
     deal_type = request.args.get("dealType", "rent")

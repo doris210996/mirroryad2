@@ -377,33 +377,12 @@
                     </div>
                     <div class="form-group">
                         <label for="reSettlement">עיר</label>
-                        <select id="reSettlement">
-                            <option value="תל אביב">תל אביב</option>
-                            <option value="ירושלים">ירושלים</option>
-                            <option value="חיפה">חיפה</option>
-                            <option value="באר שבע">באר שבע</option>
-                            <option value="ראשון לציון">ראשון לציון</option>
-                            <option value="אשדוד">אשדוד</option>
-                            <option value="נתניה">נתניה</option>
-                            <option value="חולון">חולון</option>
-                            <option value="בני ברק">בני ברק</option>
-                            <option value="רמת גן">רמת גן</option>
-                            <option value="אשקלון">אשקלון</option>
-                            <option value="בת ים">בת ים</option>
-                            <option value="הרצליה">הרצליה</option>
-                            <option value="כפר סבא">כפר סבא</option>
-                            <option value="רעננה">רעננה</option>
-                            <option value="מודיעין">מודיעין</option>
-                            <option value="רחובות">רחובות</option>
-                            <option value="גבעתיים">גבעתיים</option>
-                            <option value="הוד השרון">הוד השרון</option>
-                            <option value="רמת השרון">רמת השרון</option>
-                            <option value="אילת">אילת</option>
-                        </select>
+                        <input type="text" id="reSettlement" list="reCityList" placeholder="הקלידו עיר...">
+                        <datalist id="reCityList"></datalist>
                     </div>
                     <div class="form-group">
                         <label for="reNeighborhood">שכונה</label>
-                        <input type="text" id="reNeighborhood" list="reNeighborhoodList" placeholder="הכל" autocomplete="off">
+                        <input type="text" id="reNeighborhood" list="reNeighborhoodList" placeholder="הכל">
                         <datalist id="reNeighborhoodList"></datalist>
                     </div>
                 </div>
@@ -473,6 +452,16 @@
             const dl = document.getElementById('reNeighborhoodList');
             dl.innerHTML = (neighborhoods || []).map(n => `<option value="${n}">`).join('');
         }
+
+        // Load city list on page load
+        (async function loadCities() {
+            try {
+                const res = await fetch('/api/cities');
+                const cities = await res.json();
+                const dl = document.getElementById('reCityList');
+                dl.innerHTML = cities.map(c => `<option value="${c}">`).join('');
+            } catch (e) { /* ignore */ }
+        })();
 
         function reRenderItems(items) {
             const container = document.getElementById('reResults');
