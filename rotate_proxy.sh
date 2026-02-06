@@ -2,8 +2,8 @@
 # Rotate the proxy VM's IP by stop/start and re-establish SSH SOCKS tunnel.
 # Usage: ./rotate_proxy.sh
 
-VM_NAME="yad2-proxy"
-ZONE="us-central1-a"
+VM_NAME="yad2-proxy3"
+ZONE="europe-west1-b"
 SOCKS_PORT=1080
 
 echo "[$(date)] Rotating proxy IP..."

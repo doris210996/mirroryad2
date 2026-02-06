@@ -7,6 +7,8 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/tom-select@2.4.3/dist/css/tom-select.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/tom-select@2.4.3/dist/js/tom-select.complete.min.js"></script>
     <style>
         *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -126,37 +128,47 @@
         .form-group input::placeholder { color: rgba(255,255,255,0.25); }
         .form-group input[type="number"] { direction: ltr; text-align: right; }
 
-        /* ── Custom Autocomplete ── */
-        .ac-wrapper { position: relative; }
-        .ac-dropdown {
-            display: none;
-            position: absolute;
-            top: 100%;
-            right: 0;
-            left: 0;
-            z-index: 100;
-            max-height: 200px;
-            overflow-y: auto;
+        /* ── Tom Select Dark Theme Override ── */
+        .ts-wrapper { width: 100%; }
+        .ts-wrapper .ts-control {
+            padding: 10px 14px;
+            border-radius: 10px;
+            border: 1px solid rgba(255,165,0,0.15);
+            background: rgba(255,255,255,0.06);
+            color: #f9fafb;
+            font-size: 0.9rem;
+            font-family: 'Inter', sans-serif;
+            box-shadow: none;
+            direction: rtl;
+            min-height: 0;
+        }
+        .ts-wrapper .ts-control input { color: #f9fafb !important; }
+        .ts-wrapper .ts-control input::placeholder { color: rgba(255,255,255,0.25) !important; }
+        .ts-wrapper.focus .ts-control {
+            border-color: #FF6B00;
+            box-shadow: 0 0 0 3px rgba(255,107,0,0.15);
+        }
+        .ts-wrapper .ts-dropdown {
             background: #1f2937;
             border: 1px solid rgba(255,165,0,0.25);
             border-top: none;
             border-radius: 0 0 10px 10px;
             box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+            margin-top: 0;
         }
-        .ac-dropdown.open { display: block; }
-        .ac-option {
+        .ts-wrapper .ts-dropdown .option {
             padding: 8px 14px;
-            font-size: 0.88rem;
             color: #f9fafb;
-            cursor: pointer;
-            transition: background 0.15s;
+            font-size: 0.88rem;
         }
-        .ac-option:hover,
-        .ac-option.active {
+        .ts-wrapper .ts-dropdown .option:hover,
+        .ts-wrapper .ts-dropdown .active {
             background: rgba(255,165,0,0.15);
+            color: #f9fafb;
         }
-        .ac-dropdown::-webkit-scrollbar { width: 6px; }
-        .ac-dropdown::-webkit-scrollbar-thumb { background: rgba(255,165,0,0.3); border-radius: 3px; }
+        .ts-wrapper .ts-dropdown .ts-dropdown-content::-webkit-scrollbar { width: 6px; }
+        .ts-wrapper .ts-dropdown .ts-dropdown-content::-webkit-scrollbar-thumb { background: rgba(255,165,0,0.3); border-radius: 3px; }
+        .ts-wrapper .ts-control .item { color: #f9fafb; }
 
         /* ── Action Buttons ── */
         .re-actions {
@@ -407,15 +419,9 @@
                             <option value="forsale">מכירה</option>
                         </select>
                     </div>
-                    <div class="form-group ac-wrapper">
-                        <label for="reSettlement">עיר</label>
-                        <input type="text" id="reSettlement" placeholder="הקלידו עיר..." autocomplete="off">
-                        <div id="reCityDropdown" class="ac-dropdown"></div>
-                    </div>
-                    <div class="form-group ac-wrapper">
-                        <label for="reNeighborhood">שכונה</label>
-                        <input type="text" id="reNeighborhood" placeholder="הכל" autocomplete="off">
-                        <div id="reNeighborhoodDropdown" class="ac-dropdown"></div>
+                    <div class="form-group" style="flex:2; min-width: 220px;">
+                        <label for="reLocation">מיקום (עיר, שכונה)</label>
+                        <select id="reLocation" placeholder="הקלידו עיר או שכונה..."></select>
                     </div>
                 </div>
                 <div class="form-row">
@@ -480,96 +486,88 @@
             </div>`;
         }
 
-        // ── Custom Autocomplete ──
-        let _cityList = [];
-        let _neighborhoodList = [];
+        // ── Tom Select — single (city, neighborhood) picker ──
+        const SEP = ' > ';
+        let locationSelect;
+        let _loadingNeighborhoods = '';
 
-        function setupAutocomplete(inputId, dropdownId, getList) {
-            const input = document.getElementById(inputId);
-            const dropdown = document.getElementById(dropdownId);
-            let activeIdx = -1;
-
-            function render(filter) {
-                const list = getList();
-                const q = (filter || '').trim();
-                const matches = q ? list.filter(s => s.includes(q)) : list;
-                if (matches.length === 0) { dropdown.classList.remove('open'); return; }
-                dropdown.innerHTML = matches.map((s, i) =>
-                    `<div class="ac-option" data-val="${s}">${s}</div>`
-                ).join('');
-                dropdown.classList.add('open');
-                activeIdx = -1;
-            }
-
-            input.addEventListener('focus', () => render(input.value));
-            input.addEventListener('input', () => render(input.value));
-
-            dropdown.addEventListener('mousedown', e => {
-                const opt = e.target.closest('.ac-option');
-                if (opt) {
-                    input.value = opt.dataset.val;
-                    dropdown.classList.remove('open');
-                    input.dispatchEvent(new Event('change'));
+        locationSelect = new TomSelect('#reLocation', {
+            create: false,
+            maxOptions: 150,
+            sortField: { field: 'text', direction: 'asc' },
+            optgroupField: 'group',
+            optgroupLabelField: 'label',
+            optgroupValueField: 'id',
+            render: {
+                optgroup_header(data) {
+                    return '<div style="padding:6px 14px;font-size:0.72rem;font-weight:700;color:#FF9500;border-bottom:1px solid rgba(255,165,0,0.1);">' + data.label + '</div>';
+                },
+            },
+            onChange(val) {
+                // If a city (no SEP) is selected, load its neighborhoods
+                if (val && !val.includes(SEP)) {
+                    loadNeighborhoods(val);
                 }
-            });
-
-            input.addEventListener('keydown', e => {
-                const opts = dropdown.querySelectorAll('.ac-option');
-                if (!opts.length || !dropdown.classList.contains('open')) return;
-                if (e.key === 'ArrowDown') {
-                    e.preventDefault();
-                    activeIdx = Math.min(activeIdx + 1, opts.length - 1);
-                } else if (e.key === 'ArrowUp') {
-                    e.preventDefault();
-                    activeIdx = Math.max(activeIdx - 1, 0);
-                } else if (e.key === 'Enter' && activeIdx >= 0) {
-                    e.preventDefault();
-                    input.value = opts[activeIdx].dataset.val;
-                    dropdown.classList.remove('open');
-                    input.dispatchEvent(new Event('change'));
-                    return;
-                } else if (e.key === 'Escape') {
-                    dropdown.classList.remove('open'); return;
-                } else return;
-                opts.forEach(o => o.classList.remove('active'));
-                if (activeIdx >= 0) { opts[activeIdx].classList.add('active'); opts[activeIdx].scrollIntoView({block:'nearest'}); }
-            });
-
-            input.addEventListener('blur', () => {
-                setTimeout(() => dropdown.classList.remove('open'), 250);
-            });
-        }
-
-        setupAutocomplete('reSettlement', 'reCityDropdown', () => _cityList);
-        setupAutocomplete('reNeighborhood', 'reNeighborhoodDropdown', () => _neighborhoodList);
+            },
+        });
 
         // Load cities on page load
         (async function loadCities() {
             try {
                 const res = await fetch('/api/cities');
-                _cityList = await res.json();
+                const cities = await res.json();
+                locationSelect.addOptionGroup('cities', { label: 'ערים' });
+                cities.forEach(c => locationSelect.addOption({ value: c, text: c, group: 'cities' }));
+                locationSelect.refreshOptions(false);
             } catch (e) { /* ignore */ }
         })();
 
-        // Clear neighborhoods when city changes
-        document.getElementById('reSettlement').addEventListener('change', () => {
-            _neighborhoodList = [];
-            document.getElementById('reNeighborhood').value = '';
-        });
-
-        function reUpdateNeighborhoodList(neighborhoods) {
-            _neighborhoodList = neighborhoods || [];
-            // Auto-show dropdown after search populates neighborhoods
-            if (_neighborhoodList.length > 0) {
-                const input = document.getElementById('reNeighborhood');
-                const dropdown = document.getElementById('reNeighborhoodDropdown');
-                const q = (input.value || '').trim();
-                const matches = q ? _neighborhoodList.filter(s => s.includes(q)) : _neighborhoodList;
-                if (matches.length) {
-                    dropdown.innerHTML = matches.map(s => `<div class="ac-option" data-val="${s}">${s}</div>`).join('');
-                    dropdown.classList.add('open');
+        // Fetch neighborhoods for a city and add as options
+        async function loadNeighborhoods(city) {
+            if (_loadingNeighborhoods === city) return;
+            _loadingNeighborhoods = city;
+            // Remove old neighborhood options
+            Object.keys(locationSelect.options).forEach(key => {
+                if (key.includes(SEP)) locationSelect.removeOption(key);
+            });
+            try {
+                const res = await fetch(`/api/neighborhoods?city=${encodeURIComponent(city)}`);
+                const neighborhoods = await res.json();
+                if (neighborhoods.length) {
+                    locationSelect.addOptionGroup('neighborhoods', { label: city + ' — שכונות' });
+                    neighborhoods.forEach(n => {
+                        const val = city + SEP + n;
+                        locationSelect.addOption({ value: val, text: n, group: 'neighborhoods' });
+                    });
+                    locationSelect.refreshOptions(false);
+                    // Re-open dropdown to show neighborhoods
+                    locationSelect.open();
                 }
+            } catch (e) { /* ignore */ }
+        }
+
+        // After search, update neighborhoods (in case search returned more/different ones)
+        function reUpdateNeighborhoodList(neighborhoods, city) {
+            if (!neighborhoods || !neighborhoods.length || !city) return;
+            locationSelect.addOptionGroup('neighborhoods', { label: city + ' — שכונות' });
+            neighborhoods.forEach(n => {
+                const val = city + SEP + n;
+                if (!locationSelect.options[val]) {
+                    locationSelect.addOption({ value: val, text: n, group: 'neighborhoods' });
+                }
+            });
+            locationSelect.refreshOptions(false);
+        }
+
+        // Parse selected value into { city, neighborhood }
+        function parseLocation() {
+            const val = locationSelect.getValue();
+            if (!val) return { city: '', neighborhood: '' };
+            if (val.includes(SEP)) {
+                const parts = val.split(SEP);
+                return { city: parts[0], neighborhood: parts.slice(1).join(SEP) };
             }
+            return { city: val, neighborhood: '' };
         }
 
         function reRenderItems(items) {
@@ -626,8 +624,7 @@
             reStopRefresh();
 
             const dealType     = document.getElementById('reDealType').value;
-            const settlement   = document.getElementById('reSettlement').value;
-            const neighborhood = document.getElementById('reNeighborhood').value.trim();
+            const { city: settlement, neighborhood } = parseLocation();
             const minPrice     = document.getElementById('reMinPrice').value || '0';
             const maxPrice     = document.getElementById('reMaxPrice').value || '10000000';
             const minSqm       = document.getElementById('reMinSqm').value;
@@ -647,7 +644,7 @@
                 reSearchId = data.search_id;
                 reStatsScope = data.statsScope || 'page';
                 reUpdateInfoBar(data);
-                reUpdateNeighborhoodList(data.neighborhoods);
+                reUpdateNeighborhoodList(data.neighborhoods, settlement);
                 reRenderItems(data.items);
             } catch (e) {
                 document.getElementById('reResults').innerHTML = '<div class="re-status">שגיאה: ' + e.message + '</div>';

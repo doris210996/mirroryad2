@@ -559,6 +559,25 @@ def api_cities():
     return jsonify(sorted(CITY_CODES.keys()))
 
 
+@app.route("/api/neighborhoods")
+def api_neighborhoods():
+    """Fetch page 1 for a city and return unique neighborhood names."""
+    settlement = request.args.get("city", "")
+    deal_type = request.args.get("dealType", "rent")
+    city_code = resolve_city_code(settlement)
+    if not city_code:
+        return jsonify([])
+    try:
+        feed = fetch_yad2_page(deal_type, city_code, "0", "100000000", 1)
+        items = extract_items(feed)
+        neighborhoods = sorted(set(
+            it.get("neighborhood", "") for it in items if it.get("neighborhood")
+        ))
+        return jsonify(neighborhoods)
+    except Exception:
+        return jsonify([])
+
+
 @app.route("/api/realestate/search")
 def realestate_search():
     deal_type = request.args.get("dealType", "rent")
