@@ -1,0 +1,10 @@
+llm-service/lib/llama.cpp/
+llm-service/models/*.gguf
+llm-service/build/
+__pycache__/
+*.pyc
+*.log
+llm-service/.cache/
+llm-service/build/
+*.gguf
+all_hoods_raw.json

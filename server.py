@@ -70,7 +70,7 @@ def handle_exception(e):
 # Yad2 scraper using curl_cffi — rotates browser fingerprints to avoid blocks
 # ---------------------------------------------------------------------------
 SOCKS_PROXY = os.environ.get("YAD2_PROXY", "socks5://127.0.0.1:1080")
-_BROWSERS = ["safari", "safari_ios", "edge99", "chrome"]
+_BROWSERS = ["edge99", "safari", "safari_ios", "chrome"]
 _browser_idx = 0
 _yad2_session = None
 
@@ -101,13 +101,15 @@ def reset_yad2_session():
     _yad2_session = None
 
 
-def fetch_yad2_page(deal_type, city_code, min_price, max_price, page):
+def fetch_yad2_page(deal_type, city_code, min_price, max_price, page, neighborhood_id=None):
     """Fetch a Yad2 search results page and extract data from __NEXT_DATA__."""
     deal_path = "rent" if deal_type == "rent" else "forsale"
     url = (
         f"https://www.yad2.co.il/realestate/{deal_path}"
         f"?city={city_code}&price={min_price}-{max_price}&page={page}"
     )
+    if neighborhood_id:
+        url += f"&neighborhood={neighborhood_id}"
 
     session = get_yad2_session()
     resp = session.get(url, timeout=15)
@@ -161,6 +163,12 @@ def extract_items(feed):
             addr = item.get("address", {})
             details = item.get("additionalDetails", {})
             house = addr.get("house", {})
+            customer = item.get("customer", {})
+            ad_type = item.get("adType", section)  # "private" or "commercial"
+            agency_name = customer.get("agencyName", "")
+            is_broker = ad_type == "commercial" or bool(agency_name)
+            tags = [t.get("text", t) if isinstance(t, dict) else str(t)
+                    for t in item.get("tags", [])]
             items.append({
                 "status": "default",
                 "linkToken": item.get("token", ""),
@@ -173,6 +181,10 @@ def extract_items(feed):
                 "squareMeters": details.get("squareMeter"),
                 "price": item.get("price", ""),
                 "updatedAt": item.get("metaData", {}).get("updatedAt", ""),
+                "adType": ad_type,
+                "isBroker": is_broker,
+                "agencyName": agency_name,
+                "tags": tags,
             })
     return items
 
@@ -200,7 +212,7 @@ def _get_thread_session():
     return _thread_local.session
 
 
-def _fetch_page_direct(deal_type, city_code, min_price, max_price, page):
+def _fetch_page_direct(deal_type, city_code, min_price, max_price, page, neighborhood_id=None):
     """Fetch a single page using the thread's own session. Thread-safe."""
     session = _get_thread_session()
     deal_path = "rent" if deal_type == "rent" else "forsale"
@@ -208,6 +220,8 @@ def _fetch_page_direct(deal_type, city_code, min_price, max_price, page):
         f"https://www.yad2.co.il/realestate/{deal_path}"
         f"?city={city_code}&price={min_price}-{max_price}&page={page}"
     )
+    if neighborhood_id:
+        url += f"&neighborhood={neighborhood_id}"
     resp = session.get(url, timeout=20)
     match = re.search(r'__NEXT_DATA__[^>]*>(.*?)</script>', resp.text, re.DOTALL)
     if not match:
@@ -226,20 +240,20 @@ def _fetch_page_direct(deal_type, city_code, min_price, max_price, page):
     return None
 
 
-def _fetch_page_worker(deal_type, city_code, min_price, max_price, page):
+def _fetch_page_worker(deal_type, city_code, min_price, max_price, page, neighborhood_id=None):
     """Worker for concurrent page fetching. Uses thread-local session."""
     try:
-        feed = _fetch_page_direct(deal_type, city_code, min_price, max_price, page)
+        feed = _fetch_page_direct(deal_type, city_code, min_price, max_price, page, neighborhood_id)
         return page, extract_items(feed) if feed else []
     except Exception as e:
         print(f"[Yad2] Failed to fetch page {page}: {e}")
         return page, []
 
 
-def fetch_all_yad2_pages(deal_type, city_code, min_price, max_price):
+def fetch_all_yad2_pages(deal_type, city_code, min_price, max_price, neighborhood_id=None):
     """Fetch all pages of Yad2 results concurrently. Returns (items, total_pages)."""
     # Page 1 first to discover total_pages (uses main thread session)
-    feed = fetch_yad2_page(deal_type, city_code, min_price, max_price, 1)
+    feed = fetch_yad2_page(deal_type, city_code, min_price, max_price, 1, neighborhood_id)
     total_pages = feed.get("pagination", {}).get("totalPages", 1)
     all_items = extract_items(feed)
 
@@ -254,7 +268,7 @@ def fetch_all_yad2_pages(deal_type, city_code, min_price, max_price):
         futures = {}
         for pg in remaining:
             time.sleep(PAGE_DELAY)  # small stagger to avoid burst
-            fut = pool.submit(_fetch_page_worker, deal_type, city_code, min_price, max_price, pg)
+            fut = pool.submit(_fetch_page_worker, deal_type, city_code, min_price, max_price, pg, neighborhood_id)
             futures[fut] = pg
 
         for fut in as_completed(futures):
@@ -318,15 +332,8 @@ def parse_price(price_str):
         return None
 
 
-def compute_price_stats(items, cached_avgs=None):
-    """Enrich items with pricePerSqm and neighborhood/city averages.
-
-    If cached_avgs is provided (from city-wide sampling), use those for
-    neighborhood/city averages. Otherwise fall back to page-level averages.
-    Also computes avgPricePerSqmFiltered — the average across all items in
-    the current (already-filtered) result set.
-    """
-    # First pass: compute pricePerSqm for each item
+def compute_price_stats(items):
+    """Enrich items with pricePerSqm, neighborhood avg, and filtered avg."""
     for item in items:
         price = parse_price(item.get("price"))
         sqm = item.get("squareMeters")
@@ -335,57 +342,24 @@ def compute_price_stats(items, cached_avgs=None):
         else:
             item["pricePerSqm"] = None
 
-    # Filtered average: avg price/sqm across all items in this result set
     filtered_ppsqm = [item["pricePerSqm"] for item in items if item.get("pricePerSqm")]
     filtered_avg = round(sum(filtered_ppsqm) / len(filtered_ppsqm)) if filtered_ppsqm else None
 
-    if cached_avgs:
-        # Use city-wide averages from cache
-        cached_nb = cached_avgs.get("neighborhood", {})
-        cached_city = cached_avgs.get("city")
+    neighborhood_vals = {}
+    for item in items:
+        ppsqm = item["pricePerSqm"]
+        if ppsqm is None:
+            continue
+        nb = item.get("neighborhood") or ""
+        if nb:
+            neighborhood_vals.setdefault(nb, []).append(ppsqm)
 
-        # Page-level fallback for neighborhoods not in cache
-        page_nb_vals = {}
-        for item in items:
-            ppsqm = item["pricePerSqm"]
-            if ppsqm is None:
-                continue
-            nb = item.get("neighborhood") or ""
-            if nb and nb not in cached_nb:
-                page_nb_vals.setdefault(nb, []).append(ppsqm)
-        page_nb_avg = {k: round(sum(v) / len(v)) for k, v in page_nb_vals.items()}
+    neighborhood_avg = {k: round(sum(v) / len(v)) for k, v in neighborhood_vals.items()}
 
-        for item in items:
-            nb = item.get("neighborhood") or ""
-            item["avgPricePerSqmNeighborhood"] = cached_nb.get(nb) or page_nb_avg.get(nb)
-            item["avgPricePerSqmCity"] = cached_city
-            item["avgPricePerSqmFiltered"] = filtered_avg
-            item["statsScope"] = "city-wide"
-    else:
-        # Page-level averages only
-        neighborhood_vals = {}
-        city_vals = {}
-        for item in items:
-            ppsqm = item["pricePerSqm"]
-            if ppsqm is None:
-                continue
-            nb = item.get("neighborhood") or ""
-            city = item.get("settlement") or ""
-            if nb:
-                neighborhood_vals.setdefault(nb, []).append(ppsqm)
-            if city:
-                city_vals.setdefault(city, []).append(ppsqm)
-
-        neighborhood_avg = {k: round(sum(v) / len(v)) for k, v in neighborhood_vals.items()}
-        city_avg = {k: round(sum(v) / len(v)) for k, v in city_vals.items()}
-
-        for item in items:
-            nb = item.get("neighborhood") or ""
-            city = item.get("settlement") or ""
-            item["avgPricePerSqmNeighborhood"] = neighborhood_avg.get(nb)
-            item["avgPricePerSqmCity"] = city_avg.get(city)
-            item["avgPricePerSqmFiltered"] = filtered_avg
-            item["statsScope"] = "all results"
+    for item in items:
+        nb = item.get("neighborhood") or ""
+        item["avgPricePerSqmNeighborhood"] = neighborhood_avg.get(nb)
+        item["avgPricePerSqmFiltered"] = filtered_avg
 
     return items
 
@@ -425,125 +399,92 @@ CITY_CODES = {
     "כרמיאל": "1139", "רמת השרון": "2650", "יבנה": "2660",
 }
 
+# ---------------------------------------------------------------------------
+# Neighborhood → city mapping with Yad2 numeric IDs
+# Each neighborhood maps to {"cities": [...], "yad2_id": int}
+# IDs were discovered by scanning Yad2's feed-literal resolver
+# ---------------------------------------------------------------------------
+NEIGHBORHOOD_MAP = {
+    # ── חיפה (names as they appear in Yad2 listings) ──
+    "אחוזה": {"cities": ["חיפה"], "yad2_id": 613},
+    "בת גלים": {"cities": ["חיפה"], "yad2_id": 598},
+    "גאולה": {"cities": ["חיפה"], "yad2_id": 1682},
+    "הדר מרכז": {"cities": ["חיפה"], "yad2_id": 1671},
+    "הדר עליון": {"cities": ["חיפה"], "yad2_id": 1684},
+    "הוד הכרמל, דניה": {"cities": ["חיפה"], "yad2_id": 616},
+    "המיימוני": {"cities": ["חיפה"], "yad2_id": 1683},
+    "העיר התחתית, ואדי סאליב": {"cities": ["חיפה"], "yad2_id": 651},
+    "הרצליה": {"cities": ["חיפה"], "yad2_id": 1669},
+    "ואדי נסנאס": {"cities": ["חיפה"], "yad2_id": 622},
+    "זיו": {"cities": ["חיפה"], "yad2_id": 643},
+    "חוף הכרמל": {"cities": ["חיפה"], "yad2_id": 1665},
+    "חליסה": {"cities": ["חיפה"], "yad2_id": 632},
+    "יזרעאליה": {"cities": ["חיפה"], "yad2_id": 641},
+    "יל\"ג": {"cities": ["חיפה"], "yad2_id": 1685},
+    "כבאביר": {"cities": ["חיפה"], "yad2_id": 610},
+    "כבירים": {"cities": ["חיפה"], "yad2_id": 611},
+    "כרמל מערבי": {"cities": ["חיפה"], "yad2_id": 609},
+    "כרמל מרכזי - שד' קיש": {"cities": ["חיפה"], "yad2_id": 625},
+    "כרמל צרפתי": {"cities": ["חיפה"], "yad2_id": 602},
+    "כרמליה": {"cities": ["חיפה"], "yad2_id": 612},
+    "מסדה": {"cities": ["חיפה"], "yad2_id": 1668},
+    "מרכז הכרמל": {"cities": ["חיפה"], "yad2_id": 624},
+    "מת\"מ, נאות פרס": {"cities": ["חיפה"], "yad2_id": 607},
+    "נווה דוד": {"cities": ["חיפה"], "yad2_id": 606},
+    "נווה יוסף": {"cities": ["חיפה"], "yad2_id": 644},
+    "נווה פז": {"cities": ["חיפה"], "yad2_id": 645},
+    "נווה שאנן": {"cities": ["חיפה"], "yad2_id": 642},
+    "נעמ\"ת": {"cities": ["חיפה"], "yad2_id": 1675},
+    "סביוני הכרמל": {"cities": ["חיפה"], "yad2_id": 634},
+    "עבאס": {"cities": ["חיפה"], "yad2_id": 1670},
+    "עין הים": {"cities": ["חיפה"], "yad2_id": 601},
+    "קרית אליהו": {"cities": ["חיפה"], "yad2_id": 619},
+    "קרית אליעזר": {"cities": ["חיפה"], "yad2_id": 599},
+    "קרית חיים מזרחית": {"cities": ["חיפה"], "yad2_id": 650},
+    "קרית חיים מערבית": {"cities": ["חיפה"], "yad2_id": 648},
+    "קרית שמואל": {"cities": ["חיפה"], "yad2_id": 649},
+    "קרית שפרינצק": {"cities": ["חיפה"], "yad2_id": 604},
+    "רוממה": {"cities": ["חיפה"], "yad2_id": 628},
+    "רמות רמז": {"cities": ["חיפה"], "yad2_id": 637},
+    "רמת אלון": {"cities": ["חיפה"], "yad2_id": 635},
+    "רמת אלמוגי": {"cities": ["חיפה"], "yad2_id": 636},
+    "רמת אשכול": {"cities": ["חיפה"], "yad2_id": 614},
+    "רמת בגין": {"cities": ["חיפה"], "yad2_id": 615},
+    "רמת בן גוריון": {"cities": ["חיפה"], "yad2_id": 629},
+    "רמת גולדה": {"cities": ["חיפה"], "yad2_id": 631},
+    "רמת הדר": {"cities": ["חיפה"], "yad2_id": 626},
+    "רמת התשבי": {"cities": ["חיפה"], "yad2_id": 608},
+    "רמת חביב / רמת הנשיא": {"cities": ["חיפה"], "yad2_id": 1664},
+    "רמת שאול": {"cities": ["חיפה"], "yad2_id": 605},
+    "שוק תלפיות": {"cities": ["חיפה"], "yad2_id": 1672},
+    "שמבור": {"cities": ["חיפה"], "yad2_id": 1674},
+    "שער העליה": {"cities": ["חיפה"], "yad2_id": 603},
+    "שער פלמר, תחנת רכבת השמונה": {"cities": ["חיפה"], "yad2_id": 1667},
+    "תל עמל": {"cities": ["חיפה"], "yad2_id": 652},
+}
+
+
+def resolve_neighborhood(neighborhood_name):
+    """Return list of cities a neighborhood belongs to, or empty list."""
+    entry = NEIGHBORHOOD_MAP.get(neighborhood_name)
+    if entry is None:
+        return []
+    return entry["cities"]
+
+
+def resolve_neighborhood_yad2_id(neighborhood_name):
+    """Return the Yad2 numeric neighborhood ID, or None."""
+    entry = NEIGHBORHOOD_MAP.get(neighborhood_name)
+    if entry is None:
+        return None
+    return entry.get("yad2_id")
+
 
 def resolve_city_code(settlement):
     """Return a city code — accepts codes directly or known city names."""
     if settlement.isdigit():
         return settlement
     return CITY_CODES.get(settlement)
-
-
-# ---------------------------------------------------------------------------
-# City-wide price/sqm averages — background sampling + monthly cache
-# ---------------------------------------------------------------------------
-_avg_cache = {}       # key: (deal_type, city_code, "YYYY-MM") → {"neighborhood": {name: avg}, "city": avg}
-_avg_building = set() # tracks in-progress builds to avoid duplicate threads
-_avg_lock = threading.Lock()
-
-
-def _fetch_yad2_page_standalone(session, deal_type, city_code, min_price, max_price, page):
-    """Like fetch_yad2_page but uses a provided session (thread-safe)."""
-    deal_path = "rent" if deal_type == "rent" else "forsale"
-    url = (
-        f"https://www.yad2.co.il/realestate/{deal_path}"
-        f"?city={city_code}&price={min_price}-{max_price}&page={page}"
-    )
-    resp = session.get(url, timeout=20)
-    match = re.search(r'__NEXT_DATA__[^>]*>(.*?)</script>', resp.text, re.DOTALL)
-    if not match:
-        raise RuntimeError("Could not extract data from Yad2 page")
-    next_data = json.loads(match.group(1))
-    queries = (
-        next_data.get("props", {})
-        .get("pageProps", {})
-        .get("dehydratedState", {})
-        .get("queries", [])
-    )
-    feed = None
-    for q in queries:
-        key = q.get("queryKey", [""])[0]
-        if "feed" in str(key) and deal_path in str(key):
-            feed = q["state"]["data"]
-            break
-    if not feed:
-        raise RuntimeError("No feed data found in Yad2 response")
-    return feed
-
-
-def _build_area_averages(deal_type, city_code):
-    """Fetch a sample of pages across ALL listings for this city/deal_type and compute averages."""
-    cache_key = (deal_type, city_code, datetime.datetime.now().strftime("%Y-%m"))
-    try:
-        # Use a dedicated session for the background thread with rotated fingerprint
-        import random
-        browser = random.choice(_BROWSERS)
-        session = _make_session(browser)
-        session.get("https://www.yad2.co.il/", timeout=15)
-
-        # Page 1 with full price range to get total_pages
-        feed = _fetch_yad2_page_standalone(session, deal_type, city_code, 0, 100000000, 1)
-        total_pages = feed.get("pagination", {}).get("totalPages", 1)
-
-        all_items = extract_items(feed)
-
-        # Pick up to 5 evenly-spaced pages (page 1 already fetched)
-        if total_pages <= 5:
-            pages_to_fetch = [p for p in range(2, total_pages + 1)]
-        else:
-            step = total_pages / 5
-            sample_pages = [max(1, int(round(step * i))) for i in range(1, 5)]
-            # Deduplicate and exclude page 1 (already fetched)
-            pages_to_fetch = sorted(set(p for p in sample_pages if p > 1))
-
-        for pg in pages_to_fetch:
-            try:
-                pg_feed = _fetch_yad2_page_standalone(session, deal_type, city_code, 0, 100000000, pg)
-                all_items.extend(extract_items(pg_feed))
-            except Exception:
-                continue  # skip pages that fail
-
-        # Compute pricePerSqm for sampled items
-        neighborhood_vals = {}
-        city_vals = []
-        for item in all_items:
-            price = parse_price(item.get("price"))
-            sqm = item.get("squareMeters")
-            if not price or not sqm or float(sqm) <= 0:
-                continue
-            ppsqm = price / float(sqm)
-            city_vals.append(ppsqm)
-            nb = item.get("neighborhood") or ""
-            if nb:
-                neighborhood_vals.setdefault(nb, []).append(ppsqm)
-
-        neighborhood_avg = {k: round(sum(v) / len(v)) for k, v in neighborhood_vals.items()}
-        city_avg = round(sum(city_vals) / len(city_vals)) if city_vals else None
-
-        with _avg_lock:
-            _avg_cache[cache_key] = {"neighborhood": neighborhood_avg, "city": city_avg}
-
-        print(f"[AvgCache] Built averages for {deal_type}/{city_code}: "
-              f"{len(city_vals)} samples, {len(neighborhood_avg)} neighborhoods, "
-              f"{len(pages_to_fetch)+1} pages sampled")
-
-    except Exception as e:
-        print(f"[AvgCache] Failed to build averages for {deal_type}/{city_code}: {e}")
-    finally:
-        with _avg_lock:
-            _avg_building.discard(cache_key)
-
-
-def _get_or_start_avg_cache(deal_type, city_code):
-    """Return cached averages if available, else start a background build and return None."""
-    cache_key = (deal_type, city_code, datetime.datetime.now().strftime("%Y-%m"))
-    with _avg_lock:
-        if cache_key in _avg_cache:
-            return _avg_cache[cache_key]
-        if cache_key not in _avg_building:
-            _avg_building.add(cache_key)
-            t = threading.Thread(target=_build_area_averages, args=(deal_type, city_code), daemon=True)
-            t.start()
-    return None
 
 
 # ---------------------------------------------------------------------------
@@ -559,23 +500,17 @@ def api_cities():
     return jsonify(sorted(CITY_CODES.keys()))
 
 
-@app.route("/api/neighborhoods")
-def api_neighborhoods():
-    """Fetch page 1 for a city and return unique neighborhood names."""
-    settlement = request.args.get("city", "")
-    deal_type = request.args.get("dealType", "rent")
-    city_code = resolve_city_code(settlement)
-    if not city_code:
-        return jsonify([])
-    try:
-        feed = fetch_yad2_page(deal_type, city_code, "0", "100000000", 1)
-        items = extract_items(feed)
-        neighborhoods = sorted(set(
-            it.get("neighborhood", "") for it in items if it.get("neighborhood")
-        ))
-        return jsonify(neighborhoods)
-    except Exception:
-        return jsonify([])
+@app.route("/api/locations")
+def api_locations():
+    """Return all known neighborhoods grouped by city for the frontend picker."""
+    # Build city → [neighborhoods] from NEIGHBORHOOD_MAP
+    city_hoods = {}
+    for hood, entry in NEIGHBORHOOD_MAP.items():
+        for city in entry["cities"]:
+            city_hoods.setdefault(city, []).append(hood)
+    # Sort neighborhoods within each city
+    result = {city: sorted(hoods) for city, hoods in city_hoods.items()}
+    return jsonify(result)
 
 
 @app.route("/api/realestate/search")
@@ -588,8 +523,18 @@ def realestate_search():
     max_sqm_str = request.args.get("maxSqm", "")
     neighborhood = request.args.get("neighborhood", "").strip()
 
+    # Neighborhood-first: if no settlement but neighborhood given, resolve city
+    if not settlement and neighborhood:
+        cities = resolve_neighborhood(neighborhood)
+        if len(cities) == 1:
+            settlement = cities[0]
+        elif len(cities) > 1:
+            return jsonify({"error": "ambiguous", "cities": cities, "neighborhood": neighborhood}), 300
+        else:
+            return jsonify({"error": f"שכונה '{neighborhood}' לא נמצאה במאגר"}), 404
+
     if not settlement:
-        return jsonify({"error": "settlement is required"}), 400
+        return jsonify({"error": "יש לבחור שכונה"}), 400
 
     try:
         min_price = int(min_price)
@@ -603,9 +548,11 @@ def realestate_search():
     if not city_code:
         return jsonify({"error": f"Settlement '{settlement}' not found. Use a city code or one of: {', '.join(sorted(CITY_CODES.keys()))}"}), 404
 
+    neighborhood_id = resolve_neighborhood_yad2_id(neighborhood) if neighborhood else None
+
     t_start = time.time()
     try:
-        items, total_pages = fetch_all_yad2_pages(deal_type, city_code, min_price, max_price)
+        items, total_pages = fetch_all_yad2_pages(deal_type, city_code, min_price, max_price, neighborhood_id)
     except RuntimeError as e:
         return jsonify({"error": str(e)}), 502
     except Exception as e:
@@ -615,17 +562,10 @@ def realestate_search():
     items = remove_duplicates(items)
     items = filter_items(items, min_sqm=min_sqm, max_sqm=max_sqm, neighborhood=neighborhood)
 
-    cached_avgs = _get_or_start_avg_cache(deal_type, city_code)
-    items = compute_price_stats(items, cached_avgs)
+    items = compute_price_stats(items)
     fetch_time = round(time.time() - t_start, 1)
 
-    # Count items that contributed to the filtered average
     avg_sample_count = sum(1 for it in items if it.get("pricePerSqm"))
-
-    # Collect unique neighborhoods for autocomplete
-    neighborhoods = sorted(set(
-        it.get("neighborhood", "") for it in items if it.get("neighborhood")
-    ))
 
     search_id = ""
     if searches_collection is not None:
@@ -650,15 +590,12 @@ def realestate_search():
         except Exception:
             pass
 
-    stats_scope = "city-wide" if cached_avgs else "all results"
     return jsonify({
         "search_id": search_id,
         "items": items,
         "total_pages": total_pages,
-        "statsScope": stats_scope,
         "fetchTime": fetch_time,
         "avgSampleCount": avg_sample_count,
-        "neighborhoods": neighborhoods,
     })
 
 
@@ -681,10 +618,13 @@ def realestate_update():
 
     params = doc["search_params"]
 
+    neighborhood_id = resolve_neighborhood_yad2_id(params.get("neighborhood", ""))
+
     try:
         new_items, total_pages = fetch_all_yad2_pages(
             params["dealType"], params["cityCode"],
             params["minPrice"], params["maxPrice"],
+            neighborhood_id,
         )
     except RuntimeError as e:
         return jsonify({"error": str(e)}), 502
@@ -700,8 +640,7 @@ def realestate_update():
     )
     changed_items = detect_changes(doc["items"], new_items)
 
-    cached_avgs = _get_or_start_avg_cache(params["dealType"], params["cityCode"])
-    changed_items = compute_price_stats(changed_items, cached_avgs)
+    changed_items = compute_price_stats(changed_items)
 
     try:
         searches_collection.update_one(
@@ -715,12 +654,10 @@ def realestate_update():
     except Exception:
         pass
 
-    stats_scope = "city-wide" if cached_avgs else "all results"
     return jsonify({
         "items": changed_items,
         "search_params": params,
         "total_pages": total_pages,
-        "statsScope": stats_scope,
     })
 
 
@@ -747,6 +684,108 @@ def manual_rotate():
     """Manually trigger proxy IP rotation."""
     threading.Thread(target=rotate_proxy_ip, daemon=True).start()
     return jsonify({"status": "rotation started"})
+
+
+# ---------------------------------------------------------------------------
+# LLM Analysis — fetch listing description + call C++ sentiment service
+# ---------------------------------------------------------------------------
+# TODO: Upgrade to better Hebrew-capable LLM for improved sentiment analysis
+#       Current: Qwen 2.5 1.5B (struggles with Hebrew, returns neutral/0%)
+#       Future options: Qwen 2.5 3B/7B, multilingual BERT, or Hebrew-specific model
+LLM_SERVICE_URL = os.environ.get("LLM_SERVICE_URL", "http://127.0.0.1:8282")
+_description_cache = {}  # linkToken -> description string
+
+
+def fetch_listing_description(token):
+    """Fetch the description from an individual Yad2 listing detail page."""
+    if token in _description_cache:
+        return _description_cache[token]
+
+    url = f"https://www.yad2.co.il/realestate/item/{token}"
+    session = get_yad2_session()
+    try:
+        resp = session.get(url, timeout=20)
+    except Exception:
+        reset_yad2_session()
+        session = get_yad2_session()
+        resp = session.get(url, timeout=20)
+
+    match = re.search(r'__NEXT_DATA__[^>]*>(.*?)</script>', resp.text, re.DOTALL)
+    if not match:
+        return None
+
+    try:
+        next_data = json.loads(match.group(1))
+        page_props = next_data.get("props", {}).get("pageProps", {})
+        # Try multiple paths where description might live
+        item_data = page_props.get("itemData", {})
+        description = (
+            item_data.get("description")
+            or item_data.get("info", {}).get("content")
+            or item_data.get("metaData", {}).get("description")
+            or ""
+        )
+        # Also try dehydratedState queries
+        if not description:
+            for q in page_props.get("dehydratedState", {}).get("queries", []):
+                data = q.get("state", {}).get("data", {})
+                if isinstance(data, dict):
+                    # searchText contains the full listing description
+                    description = data.get("searchText") or data.get("description", "")
+                    if description:
+                        break
+
+        if description:
+            # Extract just the client description part (after "תאור לקוח")
+            if "תאור לקוח" in description:
+                parts = description.split("תאור לקוח", 1)
+                description = parts[1].strip().strip("*").strip()
+            _description_cache[token] = description
+        return description or None
+    except (json.JSONDecodeError, KeyError):
+        return None
+
+
+_sentiment_cache = {}  # linkToken -> sentiment result dict
+
+
+@app.route("/api/realestate/analyze/<token>")
+def realestate_analyze(token):
+    """Lazy endpoint: fetch description + call C++ LLM service for sentiment."""
+    if not token:
+        return jsonify({"error": "token is required"}), 400
+
+    # Check Python-side cache
+    if token in _sentiment_cache:
+        return jsonify(_sentiment_cache[token])
+
+    # Fetch description
+    description = fetch_listing_description(token)
+    if not description:
+        result = {"sentiment": "neutral", "confidence": 0.0, "keywords": [],
+                  "note": "No description available"}
+        _sentiment_cache[token] = result
+        return jsonify(result)
+
+    # Call C++ LLM service
+    import urllib.request
+    try:
+        payload = json.dumps({"items": [{"token": token, "description": description}]})
+        req = urllib.request.Request(
+            f"{LLM_SERVICE_URL}/analyze",
+            data=payload.encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            result = data.get("results", {}).get(token, {
+                "sentiment": "neutral", "confidence": 0.0, "keywords": []
+            })
+            _sentiment_cache[token] = result
+            return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": f"LLM service unavailable: {e}",
+                        "sentiment": "neutral", "confidence": 0.0, "keywords": []}), 200
 
 
 # ---------------------------------------------------------------------------

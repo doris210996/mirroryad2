@@ -291,6 +291,75 @@
         }
         .badge.new { background: rgba(16,185,129,0.2); color: #10b981; }
         .badge.updated { background: rgba(59,130,246,0.2); color: #3b82f6; }
+        .badge.broker { background: rgba(239,68,68,0.2); color: #ef4444; }
+
+        .re-item-tags {
+            display: flex;
+            gap: 4px;
+            flex-wrap: wrap;
+            margin-top: 6px;
+        }
+        .tag-pill {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 0.62rem;
+            font-weight: 500;
+            background: rgba(139,92,246,0.15);
+            color: #a78bfa;
+            white-space: nowrap;
+        }
+
+        /* AI Analysis */
+        .ai-btn {
+            padding: 4px 12px;
+            border-radius: 8px;
+            border: 1px solid rgba(139,92,246,0.3);
+            background: rgba(139,92,246,0.1);
+            color: #a78bfa;
+            font-size: 0.68rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            margin-top: 6px;
+        }
+        .ai-btn:hover {
+            background: rgba(139,92,246,0.2);
+            border-color: rgba(139,92,246,0.5);
+        }
+        .ai-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .ai-btn.loading { animation: pulse 1.5s ease-in-out infinite; }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        .sentiment-badge {
+            display: inline-block;
+            padding: 3px 10px;
+            border-radius: 20px;
+            font-size: 0.65rem;
+            font-weight: 700;
+            margin-top: 6px;
+        }
+        .sentiment-badge.positive { background: rgba(16,185,129,0.2); color: #10b981; }
+        .sentiment-badge.negative { background: rgba(239,68,68,0.2); color: #ef4444; }
+        .sentiment-badge.neutral { background: rgba(156,163,175,0.2); color: #9ca3af; }
+        .ai-keywords {
+            display: flex;
+            gap: 4px;
+            flex-wrap: wrap;
+            margin-top: 4px;
+        }
+        .ai-keyword {
+            padding: 2px 6px;
+            border-radius: 8px;
+            font-size: 0.58rem;
+            background: rgba(255,165,0,0.1);
+            color: #FFB347;
+        }
 
         .re-item-type {
             font-size: 0.95rem;
@@ -420,8 +489,8 @@
                         </select>
                     </div>
                     <div class="form-group" style="flex:2; min-width: 220px;">
-                        <label for="reLocation">מיקום (עיר, שכונה)</label>
-                        <select id="reLocation" placeholder="הקלידו עיר או שכונה..."></select>
+                        <label for="reLocation">שכונה</label>
+                        <select id="reLocation" placeholder="הקלידו שם שכונה..."></select>
                     </div>
                 </div>
                 <div class="form-row">
@@ -463,7 +532,9 @@
     <script>
         let reSearchId = null;
         let reRefreshInterval = null;
-        let reStatsScope = 'page';
+
+        // Neighborhood → city mapping loaded from server
+        let neighborhoodCityMap = {};
 
         function reUpdateInfoBar(data) {
             const bar = document.getElementById('reInfoBar');
@@ -475,25 +546,20 @@
             const totalItems = data.items.length;
             const avgCount = data.avgSampleCount || 0;
             const totalPages = data.total_pages || '\u2014';
-            const scope = data.statsScope === 'city-wide' ? 'כלל העיר' : 'כל התוצאות';
-
             bar.innerHTML = `<div class="re-info-bar">
                 <span>זמן שליפה: <span class="info-value">${fetchTime}</span></span>
                 <span>תוצאות: <span class="info-value">${totalItems}</span></span>
                 <span>עמודים שנסרקו: <span class="info-value">${Math.min(totalPages, 20)} / ${totalPages}</span></span>
                 <span>ממוצע מחושב על: <span class="info-value">${avgCount} נכסים</span></span>
-                <span>מקור: <span class="info-value">${scope}</span></span>
             </div>`;
         }
 
-        // ── Tom Select — single (city, neighborhood) picker ──
-        const SEP = ' > ';
+        // ── Tom Select — neighborhood-first picker ──
         let locationSelect;
-        let _loadingNeighborhoods = '';
 
         locationSelect = new TomSelect('#reLocation', {
             create: false,
-            maxOptions: 150,
+            maxOptions: 200,
             sortField: { field: 'text', direction: 'asc' },
             optgroupField: 'group',
             optgroupLabelField: 'label',
@@ -503,72 +569,27 @@
                     return '<div style="padding:6px 14px;font-size:0.72rem;font-weight:700;color:#FF9500;border-bottom:1px solid rgba(255,165,0,0.1);">' + data.label + '</div>';
                 },
             },
-            onChange(val) {
-                // If a city (no SEP) is selected, load its neighborhoods
-                if (val && !val.includes(SEP)) {
-                    loadNeighborhoods(val);
-                }
-            },
         });
 
-        // Load cities on page load
-        (async function loadCities() {
+        // Load neighborhoods on page load
+        (async function loadLocations() {
             try {
-                const res = await fetch('/api/cities');
-                const cities = await res.json();
-                locationSelect.addOptionGroup('cities', { label: 'ערים' });
-                cities.forEach(c => locationSelect.addOption({ value: c, text: c, group: 'cities' }));
+                const res = await fetch('/api/locations');
+                const data = await res.json(); // { city: [neighborhood, ...], ... }
+                // Build reverse map: neighborhood → [cities]
+                const hoodToCities = {};
+                for (const [city, hoods] of Object.entries(data)) {
+                    locationSelect.addOptionGroup(city, { label: city });
+                    for (const hood of hoods) {
+                        locationSelect.addOption({ value: hood, text: hood, group: city });
+                        if (!hoodToCities[hood]) hoodToCities[hood] = [];
+                        hoodToCities[hood].push(city);
+                    }
+                }
+                neighborhoodCityMap = hoodToCities;
                 locationSelect.refreshOptions(false);
             } catch (e) { /* ignore */ }
         })();
-
-        // Fetch neighborhoods for a city and add as options
-        async function loadNeighborhoods(city) {
-            if (_loadingNeighborhoods === city) return;
-            _loadingNeighborhoods = city;
-            // Remove old neighborhood options
-            Object.keys(locationSelect.options).forEach(key => {
-                if (key.includes(SEP)) locationSelect.removeOption(key);
-            });
-            try {
-                const res = await fetch(`/api/neighborhoods?city=${encodeURIComponent(city)}`);
-                const neighborhoods = await res.json();
-                if (neighborhoods.length) {
-                    locationSelect.addOptionGroup('neighborhoods', { label: city + ' — שכונות' });
-                    neighborhoods.forEach(n => {
-                        const val = city + SEP + n;
-                        locationSelect.addOption({ value: val, text: n, group: 'neighborhoods' });
-                    });
-                    locationSelect.refreshOptions(false);
-                    // Re-open dropdown to show neighborhoods
-                    locationSelect.open();
-                }
-            } catch (e) { /* ignore */ }
-        }
-
-        // After search, update neighborhoods (in case search returned more/different ones)
-        function reUpdateNeighborhoodList(neighborhoods, city) {
-            if (!neighborhoods || !neighborhoods.length || !city) return;
-            locationSelect.addOptionGroup('neighborhoods', { label: city + ' — שכונות' });
-            neighborhoods.forEach(n => {
-                const val = city + SEP + n;
-                if (!locationSelect.options[val]) {
-                    locationSelect.addOption({ value: val, text: n, group: 'neighborhoods' });
-                }
-            });
-            locationSelect.refreshOptions(false);
-        }
-
-        // Parse selected value into { city, neighborhood }
-        function parseLocation() {
-            const val = locationSelect.getValue();
-            if (!val) return { city: '', neighborhood: '' };
-            if (val.includes(SEP)) {
-                const parts = val.split(SEP);
-                return { city: parts[0], neighborhood: parts.slice(1).join(SEP) };
-            }
-            return { city: val, neighborhood: '' };
-        }
 
         function reRenderItems(items) {
             const container = document.getElementById('reResults');
@@ -576,23 +597,28 @@
                 container.innerHTML = '<div class="re-status">לא נמצאו תוצאות</div>';
                 return;
             }
-            const scopeLabel = reStatsScope === 'city-wide' ? '(כלל העיר)' : '(כל התוצאות)';
             container.innerHTML = items.map(item => {
-                let badgeHtml = '';
-                if (item.status === 'new') badgeHtml = '<div class="re-item-badges"><span class="badge new">חדש</span></div>';
-                else if (item.status === 'updated') badgeHtml = '<div class="re-item-badges"><span class="badge updated">עודכן</span></div>';
+                let badges = [];
+                if (item.status === 'new') badges.push('<span class="badge new">חדש</span>');
+                else if (item.status === 'updated') badges.push('<span class="badge updated">עודכן</span>');
+                if (item.isBroker) badges.push('<span class="badge broker">תיווך' + (item.agencyName ? ' — ' + item.agencyName : '') + '</span>');
+                let badgeHtml = badges.length ? '<div class="re-item-badges">' + badges.join('') + '</div>' : '';
+
+                let tagsHtml = '';
+                if (item.tags && item.tags.length) {
+                    tagsHtml = '<div class="re-item-tags">' + item.tags.map(t => `<span class="tag-pill">${t}</span>`).join('') + '</div>';
+                }
 
                 let statsHtml = '';
                 if (item.pricePerSqm) {
                     const fmt = n => n ? n.toLocaleString() : '\u2014';
-                    const avg = item.avgPricePerSqmNeighborhood || item.avgPricePerSqmCity;
+                    const avg = item.avgPricePerSqmNeighborhood || item.avgPricePerSqmFiltered;
                     let dealClass = '';
                     if (avg) dealClass = item.pricePerSqm <= avg ? 'deal-good' : 'deal-bad';
                     statsHtml = `<div class="re-stats">
                         <span class="stat ${dealClass}">${fmt(item.pricePerSqm)} /מ"ר</span>
                         ${item.avgPricePerSqmFiltered ? `<span class="stat">ממוצע מסונן: ${fmt(item.avgPricePerSqmFiltered)} /מ"ר</span>` : ''}
-                        ${item.avgPricePerSqmNeighborhood ? `<span class="stat">ממוצע שכונה ${scopeLabel}: ${fmt(item.avgPricePerSqmNeighborhood)} /מ"ר</span>` : ''}
-                        ${item.avgPricePerSqmCity ? `<span class="stat">ממוצע עיר ${scopeLabel}: ${fmt(item.avgPricePerSqmCity)} /מ"ר</span>` : ''}
+                        ${item.avgPricePerSqmNeighborhood ? `<span class="stat">ממוצע שכונה: ${fmt(item.avgPricePerSqmNeighborhood)} /מ"ר</span>` : ''}
                     </div>`;
                 }
 
@@ -611,7 +637,11 @@
                             <span>${item.squareMeters ?? '\u2014'} מ"ר</span>
                         </div>
                         <div class="re-item-updated">עודכן: ${item.updatedAt || '\u2014'}</div>
+                        ${tagsHtml}
                         ${statsHtml}
+                        <div id="ai-area-${item.linkToken}">
+                            <button class="ai-btn" onclick="aiAnalyze('${item.linkToken}')">ניתוח AI</button>
+                        </div>
                     </div>
                     <div class="re-item-price-col">
                         <div class="re-price">${item.price || '\u2014'}</div>
@@ -620,11 +650,35 @@
             }).join('');
         }
 
+        async function aiAnalyze(token) {
+            const area = document.getElementById('ai-area-' + token);
+            if (!area) return;
+            const btn = area.querySelector('.ai-btn');
+            if (btn) { btn.disabled = true; btn.classList.add('loading'); btn.textContent = 'מנתח...'; }
+
+            try {
+                const res = await fetch('/api/realestate/analyze/' + encodeURIComponent(token));
+                const data = await res.json();
+                const sentimentLabel = {positive: 'חיובי', negative: 'שלילי', neutral: 'ניטרלי'};
+                const s = data.sentiment || 'neutral';
+                let html = `<span class="sentiment-badge ${s}">${sentimentLabel[s] || s}</span>`;
+                if (data.confidence) html += ` <span style="font-size:0.6rem;color:#6b7280;">(${Math.round(data.confidence * 100)}%)</span>`;
+                // Keywords hidden due to UTF-8 encoding issues with Hebrew
+                // if (data.keywords && data.keywords.length) {
+                //     html += '<div class="ai-keywords">' + data.keywords.map(k => `<span class="ai-keyword">${k}</span>`).join('') + '</div>';
+                // }
+                if (data.note) html += `<div style="font-size:0.6rem;color:#6b7280;margin-top:2px;">${data.note}</div>`;
+                area.innerHTML = html;
+            } catch (e) {
+                area.innerHTML = '<span style="font-size:0.6rem;color:#ef4444;">שגיאה בניתוח</span>';
+            }
+        }
+
         async function reSearch() {
             reStopRefresh();
 
             const dealType     = document.getElementById('reDealType').value;
-            const { city: settlement, neighborhood } = parseLocation();
+            const neighborhood = locationSelect.getValue();
             const minPrice     = document.getElementById('reMinPrice').value || '0';
             const maxPrice     = document.getElementById('reMaxPrice').value || '10000000';
             const minSqm       = document.getElementById('reMinSqm').value;
@@ -634,17 +688,39 @@
             document.getElementById('reInfoBar').innerHTML = '';
 
             try {
+                // Resolve city from neighborhood map so Yad2 URL includes city filter
+                const cities = neighborhoodCityMap[neighborhood] || [];
+                const settlement = cities.length === 1 ? cities[0] : '';
                 const params = new URLSearchParams({ dealType, settlement, minPrice, maxPrice });
                 if (neighborhood) params.set('neighborhood', neighborhood);
                 if (minSqm) params.set('minSqm', minSqm);
                 if (maxSqm) params.set('maxSqm', maxSqm);
+
                 const res = await fetch('/api/realestate/search?' + params);
                 const data = await res.json();
+
+                // Handle ambiguous neighborhood (multiple cities)
+                if (res.status === 300 && data.cities) {
+                    const city = prompt(`"${data.neighborhood}" נמצאת בכמה ערים:\n${data.cities.join('\n')}\n\nהקלד שם עיר:`);
+                    if (!city) {
+                        document.getElementById('reResults').innerHTML = '<div class="re-status">החיפוש בוטל</div>';
+                        return;
+                    }
+                    params.set('settlement', city);
+                    const res2 = await fetch('/api/realestate/search?' + params);
+                    const data2 = await res2.json();
+                    if (!res2.ok) throw new Error(data2.error || 'החיפוש נכשל');
+                    reSearchId = data2.search_id;
+
+                    reUpdateInfoBar(data2);
+                    reRenderItems(data2.items);
+                    return;
+                }
+
                 if (!res.ok) throw new Error(data.error || 'החיפוש נכשל');
                 reSearchId = data.search_id;
-                reStatsScope = data.statsScope || 'page';
+
                 reUpdateInfoBar(data);
-                reUpdateNeighborhoodList(data.neighborhoods, settlement);
                 reRenderItems(data.items);
             } catch (e) {
                 document.getElementById('reResults').innerHTML = '<div class="re-status">שגיאה: ' + e.message + '</div>';
@@ -657,7 +733,7 @@
                 const res = await fetch('/api/realestate/update?searchId=' + encodeURIComponent(reSearchId));
                 const data = await res.json();
                 if (!res.ok) return;
-                reStatsScope = data.statsScope || reStatsScope;
+
                 reRenderItems(data.items);
             } catch (e) { /* silently ignore polling errors */ }
         }
