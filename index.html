@@ -60,6 +60,44 @@
             letter-spacing: 0.3px;
         }
 
+        /* ── Mode Switcher ── */
+        .mode-switcher {
+            position: sticky;
+            top: 87px;
+            z-index: 99;
+            background: rgba(17,24,39,0.95);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border-bottom: 1px solid rgba(255,165,0,0.12);
+            padding: 12px 24px;
+            display: flex;
+            justify-content: center;
+            gap: 12px;
+        }
+        .mode-btn {
+            padding: 10px 24px;
+            background: rgba(255,255,255,0.04);
+            color: #9ca3af;
+            border: 1px solid rgba(255,165,0,0.15);
+            border-radius: 12px;
+            font-size: 0.95rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+            font-family: 'Inter', sans-serif;
+        }
+        .mode-btn:hover {
+            background: rgba(255,255,255,0.08);
+            border-color: rgba(255,165,0,0.3);
+            color: #f9fafb;
+        }
+        .mode-btn.active {
+            background: linear-gradient(135deg, #FF6B00, #FF9500);
+            color: white;
+            border-color: transparent;
+            box-shadow: 0 4px 16px rgba(255,107,0,0.4);
+        }
+
         /* ── Container ── */
         .container {
             position: relative;
@@ -292,6 +330,8 @@
         .badge.new { background: rgba(16,185,129,0.2); color: #10b981; }
         .badge.updated { background: rgba(59,130,246,0.2); color: #3b82f6; }
         .badge.broker { background: rgba(239,68,68,0.2); color: #ef4444; }
+        .badge.yad2 { background: rgba(255,165,0,0.2); color: #FFB347; }
+        .badge.facebook { background: rgba(59,130,246,0.2); color: #3b82f6; }
 
         .re-item-tags {
             display: flex;
@@ -460,12 +500,282 @@
             to { transform: rotate(360deg); }
         }
 
+        /* ── Mobile Filter Toggle ── */
+        .mobile-filter-toggle {
+            display: none;
+            width: 100%;
+            padding: 14px 20px;
+            margin-bottom: 16px;
+            background: linear-gradient(135deg, #FF6B00, #FF9500);
+            color: white;
+            border: none;
+            border-radius: 12px;
+            font-size: 0.95rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .mobile-filter-toggle:active {
+            transform: scale(0.98);
+        }
+        .mobile-filter-toggle .toggle-icon {
+            display: inline-block;
+            transition: transform 0.3s;
+            margin-left: 8px;
+        }
+        .mobile-filter-toggle.active .toggle-icon {
+            transform: rotate(180deg);
+        }
+
+        /* ── Sticky Search Button (Mobile) ── */
+        .sticky-search-mobile {
+            display: none;
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 200;
+            padding: 16px 40px;
+            background: linear-gradient(135deg, #FF6B00, #FF9500);
+            color: white;
+            border: none;
+            border-radius: 50px;
+            font-size: 1rem;
+            font-weight: 700;
+            box-shadow: 0 8px 24px rgba(255,107,0,0.5);
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .sticky-search-mobile:active {
+            transform: translateX(-50%) scale(0.95);
+        }
+
         /* ── Responsive ── */
-        @media (max-width: 600px) {
-            .form-row { flex-direction: column; }
-            .re-item { flex-direction: column; }
-            .re-item-price-col { align-items: flex-start; }
-            .header h1 { font-size: 1.5rem; }
+        @media (max-width: 768px) {
+            /* Header */
+            .header {
+                padding: 14px 16px;
+            }
+            .header h1 {
+                font-size: 1.6rem;
+            }
+            .header .subtitle {
+                font-size: 0.75rem;
+            }
+
+            /* Container */
+            .container {
+                padding: 16px 12px 80px;
+            }
+
+            /* Search Panel */
+            .search-panel {
+                padding: 18px;
+                border-radius: 12px;
+            }
+
+            /* Mobile Filter Toggle */
+            .mobile-filter-toggle {
+                display: flex;
+                align-items: center;
+                justify-content: center;
+            }
+
+            /* Form - Hidden by default on mobile */
+            .re-form {
+                display: none;
+                animation: slideDown 0.3s ease-out;
+            }
+            .re-form.mobile-visible {
+                display: flex;
+            }
+            @keyframes slideDown {
+                from {
+                    opacity: 0;
+                    transform: translateY(-10px);
+                }
+                to {
+                    opacity: 1;
+                    transform: translateY(0);
+                }
+            }
+
+            /* Form Layout */
+            .form-row {
+                flex-direction: column;
+                gap: 14px;
+            }
+            .form-group {
+                min-width: 100%;
+            }
+            .form-group label {
+                font-size: 0.8rem;
+                margin-bottom: 8px;
+            }
+            .form-group select,
+            .form-group input {
+                padding: 14px 16px;
+                font-size: 1rem;
+                border-radius: 12px;
+            }
+
+            /* Buttons - Larger touch targets */
+            button {
+                padding: 14px 24px;
+                font-size: 0.95rem;
+                border-radius: 12px;
+                min-height: 48px;
+            }
+            button.search-btn {
+                width: 100%;
+                font-size: 1.05rem;
+            }
+
+            /* Actions */
+            .re-actions {
+                flex-direction: column;
+                gap: 12px;
+            }
+            .re-actions button {
+                width: 100%;
+            }
+
+            /* Info Bar - Stack vertically */
+            .re-info-bar {
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 8px;
+                font-size: 0.8rem;
+                padding: 12px 14px;
+            }
+
+            /* Results */
+            .re-results {
+                max-height: none;
+                padding-left: 0;
+            }
+
+            /* Listing Cards */
+            .re-item {
+                flex-direction: column;
+                padding: 16px;
+                gap: 12px;
+                border-radius: 14px;
+                margin-bottom: 12px;
+            }
+            .re-item:active {
+                transform: scale(0.98);
+            }
+
+            /* Badges - Larger on mobile */
+            .badge {
+                padding: 5px 12px;
+                font-size: 0.7rem;
+            }
+            .re-item-badges {
+                flex-wrap: wrap;
+                gap: 8px;
+                margin-bottom: 10px;
+            }
+
+            /* Card Content */
+            .re-item-type {
+                font-size: 1.05rem;
+                margin-bottom: 6px;
+            }
+            .re-item-address {
+                font-size: 0.9rem;
+                margin-bottom: 10px;
+            }
+            .re-item-details {
+                font-size: 0.85rem;
+                gap: 14px;
+                flex-wrap: wrap;
+            }
+            .re-item-updated {
+                font-size: 0.75rem;
+                margin-top: 4px;
+            }
+
+            /* Price - Align left on mobile */
+            .re-item-price-col {
+                align-items: flex-start;
+                width: 100%;
+            }
+            .re-price {
+                font-size: 1.5rem;
+            }
+
+            /* Stats */
+            .re-stats {
+                gap: 6px;
+                margin-top: 12px;
+                padding-top: 12px;
+            }
+            .stat {
+                padding: 6px 12px;
+                font-size: 0.75rem;
+            }
+
+            /* Tags */
+            .tag-pill {
+                padding: 4px 10px;
+                font-size: 0.68rem;
+            }
+
+            /* AI Button */
+            .ai-btn {
+                padding: 8px 16px;
+                font-size: 0.75rem;
+                margin-top: 8px;
+            }
+
+            /* Sentiment Badge */
+            .sentiment-badge {
+                padding: 5px 12px;
+                font-size: 0.7rem;
+            }
+
+            /* Sticky Search Button */
+            .sticky-search-mobile {
+                display: block;
+            }
+
+            /* Status */
+            .re-status {
+                padding: 40px 16px;
+                font-size: 0.95rem;
+            }
+
+            /* Checkboxes - Larger touch targets */
+            input[type="checkbox"] {
+                width: 20px !important;
+                height: 20px !important;
+            }
+
+            /* Particle background - Reduce on mobile */
+            canvas {
+                opacity: 0.4;
+            }
+        }
+
+        /* Extra small devices */
+        @media (max-width: 380px) {
+            .header h1 {
+                font-size: 1.4rem;
+            }
+            .container {
+                padding: 12px 10px 80px;
+            }
+            .search-panel {
+                padding: 14px;
+            }
+            .re-item {
+                padding: 14px;
+            }
+            .re-price {
+                font-size: 1.3rem;
+            }
         }
     </style>
 </head>
@@ -477,8 +787,24 @@
         <p class="subtitle">חיפוש נדל"ן חכם עם סינון מתקדם</p>
     </header>
 
+    <!-- Mode Switcher -->
+    <div class="mode-switcher">
+        <button class="mode-btn active" data-mode="smart-leads" onclick="switchMode('smart-leads')">
+            🔍 Smart Leads
+        </button>
+        <button class="mode-btn" data-mode="deep-analysis" onclick="switchMode('deep-analysis')">
+            📊 ניתוח מעמיק
+        </button>
+    </div>
+
     <div class="container">
+        <!-- Smart Leads Panel -->
+        <div id="smart-leads-panel" class="mode-panel">
         <div class="search-panel">
+            <button class="mobile-filter-toggle" onclick="toggleMobileFilters()">
+                <span class="toggle-icon">▼</span>
+                <span>סינון וחיפוש</span>
+            </button>
             <div class="re-form">
                 <div class="form-row">
                     <div class="form-group">
@@ -491,6 +817,19 @@
                     <div class="form-group" style="flex:2; min-width: 220px;">
                         <label for="reLocation">שכונה</label>
                         <select id="reLocation" placeholder="הקלידו שם שכונה..."></select>
+                    </div>
+                    <div class="form-group" style="min-width: 180px;">
+                        <label>מקורות</label>
+                        <div style="display: flex; gap: 12px; align-items: center; padding: 10px 0;">
+                            <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; margin: 0;">
+                                <input type="checkbox" id="sourceYad2" checked style="cursor: pointer; width: 16px; height: 16px;">
+                                <span style="font-size: 0.88rem; font-weight: 500;">Yad2</span>
+                            </label>
+                            <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; margin: 0;">
+                                <input type="checkbox" id="sourceFacebook" checked style="cursor: pointer; width: 16px; height: 16px;">
+                                <span style="font-size: 0.88rem; font-weight: 500;">פייסבוק</span>
+                            </label>
+                        </div>
                     </div>
                 </div>
                 <div class="form-row">
@@ -527,7 +866,46 @@
         <div id="reResults" class="re-results">
             <div class="re-status">הזינו קריטריונים ולחצו חיפוש</div>
         </div>
+        </div>
+        <!-- End Smart Leads Panel -->
+
+        <!-- Deep Analysis Panel -->
+        <div id="deep-analysis-panel" class="mode-panel" style="display: none;">
+            <div class="search-panel">
+                <h2 style="font-size: 1.5rem; font-weight: 700; margin-bottom: 12px; color: #FF9500;">ניתוח מעמיק</h2>
+                <p style="font-size: 0.85rem; color: #9ca3af; margin-bottom: 20px; line-height: 1.5;">
+                    הזינו קישור למודעה ביד2 או כתובת מלאה לקבלת ניתוח מעמיק מבוסס עסקאות קודמות באזור
+                    <br><span style="font-size: 0.75rem; color: #6b7280;">💡 הנתונים כוללים דוגמאות להמחשה - לנתונים ממשיים נדרש אישור API</span>
+                </p>
+                <div class="re-form">
+                    <div class="form-group">
+                        <label for="daInput">קישור למודעה או כתובת</label>
+                        <input type="text" id="daInput" placeholder="הדביקו קישור ליד2 או הקלידו כתובת מלאה">
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="daRooms">מספר חדרים</label>
+                            <input type="number" id="daRooms" placeholder="3" step="0.5" min="0">
+                        </div>
+                        <div class="form-group" style="justify-content: flex-end;">
+                            <label>&nbsp;</label>
+                            <button class="search-btn" onclick="deepAnalyze()">נתח נכס</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="daInfoBar"></div>
+
+            <div id="daResults" class="re-results">
+                <div class="re-status">הזינו קישור או כתובת ומספר חדרים לניתוח מעמיק</div>
+            </div>
+        </div>
+        <!-- End Deep Analysis Panel -->
     </div>
+
+    <!-- Sticky Search Button (Mobile) -->
+    <button class="sticky-search-mobile" onclick="reSearch()">🔍 חיפוש</button>
 
     <script>
         let reSearchId = null;
@@ -535,6 +913,28 @@
 
         // Neighborhood → city mapping loaded from server
         let neighborhoodCityMap = {};
+
+        // Mode switching
+        function switchMode(mode) {
+            // Update button states
+            document.querySelectorAll('.mode-btn').forEach(btn => {
+                btn.classList.toggle('active', btn.dataset.mode === mode);
+            });
+
+            // Show/hide panels
+            document.getElementById('smart-leads-panel').style.display =
+                mode === 'smart-leads' ? 'block' : 'none';
+            document.getElementById('deep-analysis-panel').style.display =
+                mode === 'deep-analysis' ? 'block' : 'none';
+        }
+
+        // Mobile filter toggle
+        function toggleMobileFilters() {
+            const form = document.querySelector('.re-form');
+            const toggle = document.querySelector('.mobile-filter-toggle');
+            form.classList.toggle('mobile-visible');
+            toggle.classList.toggle('active');
+        }
 
         function reUpdateInfoBar(data) {
             const bar = document.getElementById('reInfoBar');
@@ -546,11 +946,20 @@
             const totalItems = data.items.length;
             const avgCount = data.avgSampleCount || 0;
             const totalPages = data.total_pages || '\u2014';
+            const yad2Count = data.sources?.yad2 || 0;
+            const fbCount = data.sources?.facebook || 0;
+            const errors = data.errors || {};
+            const errorMsg = Object.keys(errors).length > 0
+                ? `<span style="color:#ef4444;">שגיאות: ${Object.keys(errors).join(', ')}</span>`
+                : '';
             bar.innerHTML = `<div class="re-info-bar">
                 <span>זמן שליפה: <span class="info-value">${fetchTime}</span></span>
                 <span>תוצאות: <span class="info-value">${totalItems}</span></span>
+                <span>Yad2: <span class="info-value">${yad2Count}</span></span>
+                <span>פייסבוק: <span class="info-value">${fbCount}</span></span>
                 <span>עמודים שנסרקו: <span class="info-value">${Math.min(totalPages, 20)} / ${totalPages}</span></span>
                 <span>ממוצע מחושב על: <span class="info-value">${avgCount} נכסים</span></span>
+                ${errorMsg}
             </div>`;
         }
 
@@ -599,9 +1008,19 @@
             }
             container.innerHTML = items.map(item => {
                 let badges = [];
+                // Source badge (always first)
+                if (item.source === 'facebook') {
+                    badges.push('<span class="badge facebook">פייסבוק</span>');
+                } else {
+                    badges.push('<span class="badge yad2">Yad2</span>');
+                }
+                // Status badges
                 if (item.status === 'new') badges.push('<span class="badge new">חדש</span>');
                 else if (item.status === 'updated') badges.push('<span class="badge updated">עודכן</span>');
-                if (item.isBroker) badges.push('<span class="badge broker">תיווך' + (item.agencyName ? ' — ' + item.agencyName : '') + '</span>');
+                // Broker badge
+                if (item.isBroker || item.broker) {
+                    badges.push('<span class="badge broker">תיווך' + (item.agencyName ? ' — ' + item.agencyName : '') + '</span>');
+                }
                 let badgeHtml = badges.length ? '<div class="re-item-badges">' + badges.join('') + '</div>' : '';
 
                 let tagsHtml = '';
@@ -624,24 +1043,45 @@
 
                 const street = item.street || '';
                 const neighborhood = item.neighborhood ? ', ' + item.neighborhood : '';
-                const settlement = item.settlement || '';
+                const settlement = item.settlement || item.city || '';
+
+                // For Facebook items, format details differently
+                let detailsHtml = '';
+                if (item.source === 'facebook') {
+                    // Show parsed fields from description
+                    const roomsText = item.rooms || '\u2014';
+                    const sqmText = item.sqm || '\u2014';
+                    detailsHtml = `<div class="re-item-details">
+                        <span>חדרים: ${roomsText}</span>
+                        <span>${sqmText}</span>
+                    </div>`;
+                } else {
+                    // Yad2 has full structured data
+                    detailsHtml = `<div class="re-item-details">
+                        <span>חדרים: ${item.rooms ?? '\u2014'}</span>
+                        <span>קומה: ${item.floor ?? '\u2014'}</span>
+                        <span>${item.squareMeters ?? '\u2014'} מ"ר</span>
+                    </div>`;
+                }
+
+                // Updated time - format based on source
+                let updatedText = item.updatedAt || item.dateAdded || '\u2014';
+                if (item.source === 'facebook' && updatedText !== '\u2014') {
+                    updatedText = updatedText.split('T')[0]; // Just show date for FB
+                }
 
                 return `<div class="re-item">
                     <div class="re-item-info">
                         ${badgeHtml}
-                        <div class="re-item-type">${item.estateType || 'נכס'}</div>
-                        <div class="re-item-address">${street}${neighborhood}, ${settlement}</div>
-                        <div class="re-item-details">
-                            <span>חדרים: ${item.rooms ?? '\u2014'}</span>
-                            <span>קומה: ${item.floor ?? '\u2014'}</span>
-                            <span>${item.squareMeters ?? '\u2014'} מ"ר</span>
-                        </div>
-                        <div class="re-item-updated">עודכן: ${item.updatedAt || '\u2014'}</div>
+                        <div class="re-item-type">${item.estateType || item.title || 'נכס'}</div>
+                        <div class="re-item-address">${street}${neighborhood}${settlement ? ', ' + settlement : ''}</div>
+                        ${detailsHtml}
+                        <div class="re-item-updated">עודכן: ${updatedText}</div>
                         ${tagsHtml}
                         ${statsHtml}
-                        <div id="ai-area-${item.linkToken}">
+                        ${item.source === 'yad2' ? `<div id="ai-area-${item.linkToken}">
                             <button class="ai-btn" onclick="aiAnalyze('${item.linkToken}')">ניתוח AI</button>
-                        </div>
+                        </div>` : ''}
                     </div>
                     <div class="re-item-price-col">
                         <div class="re-price">${item.price || '\u2014'}</div>
@@ -674,6 +1114,115 @@
             }
         }
 
+        // Deep Analysis
+        async function deepAnalyze() {
+            const input = document.getElementById('daInput').value.trim();
+            const rooms = document.getElementById('daRooms').value;
+
+            if (!input) {
+                alert('יש להזין קישור למודעה או כתובת');
+                return;
+            }
+
+            document.getElementById('daResults').innerHTML = '<div class="re-status loading"><div class="spinner"></div>מנתח נכס...</div>';
+            document.getElementById('daInfoBar').innerHTML = '';
+
+            try {
+                const params = new URLSearchParams({ input, rooms });
+                const res = await fetch('/api/realestate/deep-analysis?' + params);
+                const data = await res.json();
+
+                if (data.error) {
+                    document.getElementById('daResults').innerHTML = `<div class="re-status" style="color:#ef4444;">${data.error}</div>`;
+                    return;
+                }
+
+                displayDeepAnalysisResults(data);
+            } catch (e) {
+                document.getElementById('daResults').innerHTML = '<div class="re-status" style="color:#ef4444;">שגיאה בביצוע הניתוח</div>';
+                console.error(e);
+            }
+        }
+
+        function displayDeepAnalysisResults(data) {
+            const resultsDiv = document.getElementById('daResults');
+
+            let html = '<div class="deep-analysis-report" style="background: rgba(255,255,255,0.04); border: 1px solid rgba(255,165,0,0.08); border-radius: 16px; padding: 24px; margin-top: 16px;">';
+
+            // Property details
+            html += '<div style="margin-bottom: 24px;">';
+            html += '<h3 style="font-size: 1.3rem; font-weight: 700; color: #FF9500; margin-bottom: 12px;">פרטי הנכס</h3>';
+            if (data.property) {
+                html += `<p><strong>כתובת:</strong> ${data.property.address || 'לא זמין'}</p>`;
+                html += `<p><strong>עיר:</strong> ${data.property.city || 'לא זמין'}</p>`;
+                html += `<p><strong>שכונה:</strong> ${data.property.neighborhood || 'לא זמין'}</p>`;
+                html += `<p><strong>חדרים:</strong> ${data.property.rooms || 'לא זמין'}</p>`;
+                if (data.property.price) html += `<p><strong>מחיר מבוקש:</strong> ${data.property.price}</p>`;
+                if (data.property.sqm) html += `<p><strong>שטח:</strong> ${data.property.sqm} מ"ר</p>`;
+            }
+            html += '</div>';
+
+            // Historical transactions
+            if (data.transactions && data.transactions.length > 0) {
+                html += '<div style="margin-bottom: 24px;">';
+                html += '<h3 style="font-size: 1.3rem; font-weight: 700; color: #FF9500; margin-bottom: 12px;">עסקאות קודמות באזור</h3>';
+                html += `<p style="margin-bottom: 12px;">נמצאו ${data.transactions.length} עסקאות דומות</p>`;
+
+                html += '<div style="display: grid; gap: 12px;">';
+                data.transactions.slice(0, 10).forEach(tx => {
+                    html += '<div style="background: rgba(255,255,255,0.02); padding: 12px; border-radius: 8px; border: 1px solid rgba(255,165,0,0.05);">';
+                    html += `<p><strong>תאריך:</strong> ${tx.date || 'לא זמין'}</p>`;
+                    html += `<p><strong>מחיר:</strong> ${tx.price || 'לא זמין'}</p>`;
+                    if (tx.address) html += `<p><strong>כתובת:</strong> ${tx.address}</p>`;
+                    if (tx.rooms) html += `<p><strong>חדרים:</strong> ${tx.rooms}</p>`;
+                    if (tx.sqm) html += `<p><strong>שטח:</strong> ${tx.sqm} מ"ר</p>`;
+                    html += '</div>';
+                });
+                html += '</div>';
+                html += '</div>';
+            }
+
+            // Statistics
+            if (data.statistics) {
+                html += '<div style="margin-bottom: 24px;">';
+                html += '<h3 style="font-size: 1.3rem; font-weight: 700; color: #FF9500; margin-bottom: 12px;">סטטיסטיקה</h3>';
+                const stats = data.statistics;
+                if (stats.avgPrice) html += `<p><strong>מחיר ממוצע באזור:</strong> ${stats.avgPrice}</p>`;
+                if (stats.avgPricePerSqm) html += `<p><strong>מחיר ממוצע למ"ר:</strong> ${stats.avgPricePerSqm}</p>`;
+                if (stats.minPrice) html += `<p><strong>מחיר מינימלי:</strong> ${stats.minPrice}</p>`;
+                if (stats.maxPrice) html += `<p><strong>מחיר מקסימלי:</strong> ${stats.maxPrice}</p>`;
+                if (stats.medianPrice) html += `<p><strong>מחיר חציוני:</strong> ${stats.medianPrice}</p>`;
+                html += '</div>';
+            }
+
+            // Insights
+            if (data.insights) {
+                html += '<div>';
+                html += '<h3 style="font-size: 1.3rem; font-weight: 700; color: #FF9500; margin-bottom: 12px;">תובנות</h3>';
+                html += `<p style="line-height: 1.6;">${data.insights}</p>`;
+                html += '</div>';
+            }
+
+            // Note about data source
+            if (data.note) {
+                html += '<div style="margin-top: 24px; padding: 12px; background: rgba(255,165,0,0.1); border: 1px solid rgba(255,165,0,0.2); border-radius: 8px;">';
+                html += `<p style="font-size: 0.85rem; color: #FFB347; line-height: 1.5;">ℹ️ ${data.note}</p>`;
+                html += '</div>';
+            }
+
+            html += '</div>';
+            resultsDiv.innerHTML = html;
+
+            // Update info bar
+            if (data.fetchTime) {
+                const bar = document.getElementById('daInfoBar');
+                bar.innerHTML = `<div class="re-info-bar">
+                    <span>זמן שליפה: <span class="info-value">${data.fetchTime} שניות</span></span>
+                    <span>מקור: <span class="info-value">${data.source || 'רשות המסים'}</span></span>
+                </div>`;
+            }
+        }
+
         async function reSearch() {
             reStopRefresh();
 
@@ -683,6 +1232,16 @@
             const maxPrice     = document.getElementById('reMaxPrice').value || '10000000';
             const minSqm       = document.getElementById('reMinSqm').value;
             const maxSqm       = document.getElementById('reMaxSqm').value;
+
+            // Get selected sources
+            const sources = [];
+            if (document.getElementById('sourceYad2').checked) sources.push('yad2');
+            if (document.getElementById('sourceFacebook').checked) sources.push('facebook');
+
+            if (sources.length === 0) {
+                alert('יש לבחור לפחות מקור אחד');
+                return;
+            }
 
             document.getElementById('reResults').innerHTML = '<div class="re-status loading"><div class="spinner"></div>מחפש...</div>';
             document.getElementById('reInfoBar').innerHTML = '';
@@ -695,6 +1254,7 @@
                 if (neighborhood) params.set('neighborhood', neighborhood);
                 if (minSqm) params.set('minSqm', minSqm);
                 if (maxSqm) params.set('maxSqm', maxSqm);
+                params.set('sources', sources.join(','));
 
                 const res = await fetch('/api/realestate/search?' + params);
                 const data = await res.json();

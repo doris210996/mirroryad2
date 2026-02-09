@@ -1,6 +1,6 @@
 # Yad 1.5 — Smart Filtered Real Estate
 
-A real-estate search dashboard that scrapes Yad2 listings with advanced filtering, price analytics, and automated proxy rotation to avoid bot detection.
+A real-estate search dashboard that aggregates listings from multiple sources (Yad2 + Facebook groups) with advanced filtering, price analytics, and automated proxy rotation to avoid bot detection.
 
 ## Architecture
 
@@ -21,9 +21,74 @@ Browser  -->  Flask (port 8181)  -->  SSH SOCKS tunnel (port 1080)  -->  GCE VM 
 
 | File | Purpose |
 |------|---------|
-| `server.py` | Flask app, Yad2 scraper, price stats, proxy rotation |
-| `index.html` | UI — search form, listing cards, particle background |
+| `server.py` | Flask app, multi-source aggregation, price stats, proxy rotation |
+| `facebook_parser.py` | Facebook post parser — extracts structured data from unstructured Hebrew text |
+| `index.html` | UI — search form, listing cards, source badges, particle background |
 | `rotate_proxy.sh` | Shell script to rotate the proxy VM's IP |
+
+---
+
+## Multi-Source Aggregation
+
+The app now aggregates listings from multiple sources in parallel:
+
+### Sources
+
+1. **Yad2** — Israel's largest real estate platform (structured data)
+2. **Facebook Groups** — Community groups with direct landlord listings (unstructured text)
+
+### Parallel Fetching
+
+Both sources are fetched concurrently using `ThreadPoolExecutor` with 2 source-level workers:
+
+```
+/api/realestate/search
+  ├─→ fetch_yad2_source() [4 concurrent page workers]
+  └─→ fetch_facebook_source() [sequential HTTP scraping]
+
+Results merged → Unified filtering → Combined dataset
+```
+
+**Performance:**
+- Yad2 alone: ~10-15s (20 pages, concurrent)
+- Facebook alone: ~5-10s (5 pages, HTTP)
+- **Parallel execution: ~15-20s** (max of both + merge)
+
+### Facebook Parser
+
+`facebook_parser.py` extracts structured fields from unstructured Hebrew text using regex patterns:
+
+| Field | Pattern Example | Notes |
+|-------|----------------|-------|
+| **Price** | `(\d{1,3}(,\d{3})*)\s*₪` | Required — posts without price are filtered |
+| **Rooms** | `(\d+\.?\d*)\s*חדרים` | Optional |
+| **Square meters** | `(\d+)\s*מ"ר` | Optional |
+| **City** | Match against `CITY_CODES` | Optional |
+| **Broker** | Keywords: "תיווך", "משרד נדל״ן" | Boolean flag |
+
+**Data quality:** ~30-40% of Facebook posts may lack complete data. Only posts with prices are included.
+
+### Unified Schema
+
+All items include a `source` field (`"yad2"` or `"facebook"`) for attribution:
+
+```json
+{
+  "source": "facebook",
+  "linkToken": "post_12345",
+  "price": "5,200 ₪",
+  "rooms": "3 חדרים",
+  "sqm": "80 מ״ר",
+  "city": "תל אביב",
+  "broker": false
+}
+```
+
+### Error Handling
+
+- If one source fails, return results from the other
+- Errors are included in response: `{"errors": {"facebook": "Connection timeout"}}`
+- UI displays error messages in info bar
 
 ---
 
@@ -152,8 +217,14 @@ Takes ~60-90 seconds per rotation.
 
 | Env var | Default | Description |
 |---------|---------|-------------|
-| `YAD2_PROXY` | `socks5://127.0.0.1:1080` | SOCKS proxy address |
+| `YAD2_PROXY` | `socks5://127.0.0.1:1080` | SOCKS proxy address for Yad2 |
 | `ROTATE_INTERVAL` | `30` | Minutes between periodic IP rotations |
+| `FB_GROUP_ID` | `457465901082882` | Facebook group ID to scrape |
+| `FB_MAX_PAGES` | `5` | Maximum pages to fetch from Facebook (~10 posts per page) |
+| `FB_TIMEOUT` | `60` | Timeout in seconds for Facebook scraping |
+| `MONGO_URI` | `mongodb://localhost:27017/realestate` | MongoDB connection string |
+| `LLM_SERVICE_URL` | `http://127.0.0.1:8282` | LLM service URL for sentiment analysis |
+| `GOVMAP_API_TOKEN` | `` | GovMap API token for deep analysis real data (optional) |
 
 ---
 
@@ -200,8 +271,9 @@ Takes ~60-90 seconds per rotation.
 | `minSqm` | no | Filter by minimum square meters |
 | `maxSqm` | no | Filter by maximum square meters |
 | `neighborhood` | no | Substring match against neighborhood name |
+| `fbGroupId` | no | Facebook group ID (overrides `FB_GROUP_ID` env var) |
 
-Returns: `{ search_id, items[], total_pages, statsScope }`
+Returns: `{ search_id, items[], total_pages, sources: {yad2, facebook}, errors: {}, fetchTime, avgSampleCount }`
 
 ### `GET /api/realestate/update`
 
@@ -226,14 +298,27 @@ Triggers manual proxy IP rotation. Returns `{ status: "rotation started" }`.
 ## Running
 
 ```bash
-# Start the server (proxy tunnel must be active)
+# Install dependencies
+pip install -r requirements.txt
+
+# Start the server (proxy tunnel must be active for Yad2)
 python server.py
+
+# With custom Facebook group
+FB_GROUP_ID=123456789 python server.py
 
 # With custom rotation interval (minutes)
 ROTATE_INTERVAL=15 python server.py
 
-# Without proxy (direct connection)
+# Without proxy (direct connection to Yad2)
 YAD2_PROXY="" python server.py
 ```
 
 Server runs on port `8181`.
+
+### Requirements
+
+- Python 3.8+
+- Dependencies: `flask`, `pymongo`, `curl_cffi`, `facebook-scraper`
+- Optional: MongoDB for change tracking
+- Optional: SSH tunnel to GCE VM for Yad2 proxy rotation

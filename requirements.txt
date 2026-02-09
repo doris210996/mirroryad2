@@ -1,3 +1,4 @@
 flask
 pymongo
 curl_cffi
+facebook-scraper>=0.2.59

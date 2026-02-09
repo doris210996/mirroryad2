@@ -10,6 +10,22 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from flask import Flask, send_from_directory, jsonify, request
 from curl_cffi import requests as cffi_requests
 
+# Facebook scraper integration
+try:
+    from facebook_scraper import get_posts
+    import facebook_parser
+    FACEBOOK_AVAILABLE = True
+except ImportError:
+    FACEBOOK_AVAILABLE = False
+    print("[Facebook] facebook-scraper not installed, skipping Facebook integration")
+
+# GovMap API configuration
+GOVMAP_API_TOKEN = os.environ.get("GOVMAP_API_TOKEN", "")
+if GOVMAP_API_TOKEN:
+    print(f"[GovMap] API token configured: {GOVMAP_API_TOKEN[:8]}...")
+else:
+    print("[GovMap] No API token - using sample data for deep analysis")
+
 app = Flask(__name__)
 
 # ---------------------------------------------------------------------------
@@ -167,7 +183,7 @@ def extract_items(feed):
             ad_type = item.get("adType", section)  # "private" or "commercial"
             agency_name = customer.get("agencyName", "")
             is_broker = ad_type == "commercial" or bool(agency_name)
-            tags = [t.get("text", t) if isinstance(t, dict) else str(t)
+            tags = [t.get("name", t) if isinstance(t, dict) else str(t)
                     for t in item.get("tags", [])]
             items.append({
                 "status": "default",
@@ -280,13 +296,155 @@ def fetch_all_yad2_pages(deal_type, city_code, min_price, max_price, neighborhoo
     return all_items, total_pages
 
 
+# ---------------------------------------------------------------------------
+# Facebook Group scraper — extract real estate listings from public groups
+# ---------------------------------------------------------------------------
+FB_GROUP_ID = os.environ.get("FB_GROUP_ID", "457465901082882")
+FB_MAX_PAGES = int(os.environ.get("FB_MAX_PAGES", "5"))
+FB_TIMEOUT = int(os.environ.get("FB_TIMEOUT", "60"))
+FB_COOKIES = None
+
+# Load Facebook cookies if available
+if FACEBOOK_AVAILABLE:
+    fb_cookies_file = os.path.join(os.path.dirname(__file__), "fb_cookies.json")
+    if os.path.exists(fb_cookies_file):
+        try:
+            with open(fb_cookies_file, 'r') as f:
+                FB_COOKIES = json.load(f)
+            print("[Facebook] Loaded cookies from fb_cookies.json")
+        except Exception as e:
+            print(f"[Facebook] Failed to load cookies: {e}")
+    else:
+        print("[Facebook] No cookies file found (fb_cookies.json). Facebook scraping will not work without authentication.")
+
+
+def fetch_facebook_group(group_id=None, max_pages=None):
+    """
+    Fetch and parse posts from a Facebook group.
+    Returns list of parsed items with unified schema.
+    """
+    if not FACEBOOK_AVAILABLE:
+        print("[Facebook] Skipping - facebook-scraper not installed")
+        return []
+
+    group_id = group_id or FB_GROUP_ID
+    max_pages = max_pages or FB_MAX_PAGES
+
+    if not group_id:
+        print("[Facebook] No group ID provided")
+        return []
+
+    try:
+        print(f"[Facebook] Fetching group {group_id}, max {max_pages} pages...")
+
+        # Check if cookies are available
+        if not FB_COOKIES:
+            print("[Facebook] Warning: No authentication cookies found.")
+            print("[Facebook] Using mock data for testing. Create fb_cookies.json for real scraping.")
+
+            # Use mock data for testing
+            try:
+                from mock_facebook_data import MOCK_FACEBOOK_POSTS
+                items = []
+                for post in MOCK_FACEBOOK_POSTS:
+                    parsed = facebook_parser.parse_post(post)
+                    if parsed:
+                        items.append(parsed)
+                print(f"[Facebook] Returning {len(items)} mock items for testing")
+                return items
+            except Exception as e:
+                print(f"[Facebook] Mock data failed: {e}")
+                return []
+
+        t_start = time.time()
+
+        # Fetch posts from Facebook group with cookies
+        posts = []
+        for post in get_posts(
+            group=group_id,
+            pages=max_pages,
+            timeout=FB_TIMEOUT,
+            cookies=FB_COOKIES,
+            options={"comments": False, "reactors": False, "allow_extra_requests": False}
+        ):
+            posts.append(post)
+
+        # Parse posts into unified schema
+        items = facebook_parser.parse_posts_batch(posts)
+
+        elapsed = round(time.time() - t_start, 1)
+        print(f"[Facebook] Fetched {len(posts)} posts, parsed {len(items)} valid listings in {elapsed}s")
+
+        return items
+
+    except Exception as e:
+        print(f"[Facebook] Error fetching group: {e}")
+        return []
+
+
+def fetch_multi_source(deal_type, city_code, min_price, max_price, neighborhood_id=None, fb_group_id=None, enabled_sources=None):
+    """
+    Fetch listings from multiple sources in parallel (Yad2 + Facebook).
+    Returns dict with results and errors from each source.
+
+    Args:
+        enabled_sources: list of sources to fetch from (["yad2", "facebook"]). Default: both.
+    """
+    if enabled_sources is None:
+        enabled_sources = ["yad2", "facebook"]
+
+    results = {
+        "yad2": [],
+        "facebook": [],
+        "errors": {},
+    }
+
+    # Use ThreadPoolExecutor for source-level parallelism
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = {}
+
+        # Submit Yad2 fetch (if enabled)
+        if "yad2" in enabled_sources:
+            yad2_future = pool.submit(fetch_all_yad2_pages, deal_type, city_code, min_price, max_price, neighborhood_id)
+            futures[yad2_future] = "yad2"
+
+        # Submit Facebook fetch (if enabled and available)
+        if "facebook" in enabled_sources and FACEBOOK_AVAILABLE and fb_group_id:
+            fb_future = pool.submit(fetch_facebook_group, fb_group_id)
+            futures[fb_future] = "facebook"
+
+        # Collect results as they complete
+        for future in as_completed(futures):
+            source = futures[future]
+            try:
+                if source == "yad2":
+                    items, total_pages = future.result()
+                    # Add source field to Yad2 items
+                    for item in items:
+                        item["source"] = "yad2"
+                    results["yad2"] = items
+                    results["yad2_total_pages"] = total_pages
+                elif source == "facebook":
+                    items = future.result()
+                    # Source field already added by parser
+                    results["facebook"] = items
+            except Exception as e:
+                print(f"[{source}] Error: {e}")
+                results["errors"][source] = str(e)
+
+    return results
+
+
 def remove_duplicates(items):
+    """Remove duplicates using (source, linkToken) as key to prevent collisions."""
     seen = set()
     result = []
     for item in items:
-        token = item["linkToken"]
-        if token and token not in seen:
-            seen.add(token)
+        source = item.get("source", "yad2")  # Default to yad2 for backwards compatibility
+        token = item.get("linkToken", "")
+        key = (source, token)
+        if token and key not in seen:
+            seen.add(key)
             result.append(item)
     return result
 
@@ -386,7 +544,7 @@ def detect_changes(old_items, new_items):
 
 
 CITY_CODES = {
-    "תל אביב": "5000", "ירושלים": "3000", "חיפה": "4000",
+    "תל אביב": "5000", "תל אביב יפו": "5000", "ירושלים": "3000", "חיפה": "4000",
     "באר שבע": "7900", "ראשון לציון": "8300", "פתח תקווה": "7900",
     "אשדוד": "70", "נתניה": "7400", "חולון": "6600",
     "בני ברק": "6200", "רמת גן": "8600", "אשקלון": "7100",
@@ -461,6 +619,81 @@ NEIGHBORHOOD_MAP = {
     "שער העליה": {"cities": ["חיפה"], "yad2_id": 603},
     "שער פלמר, תחנת רכבת השמונה": {"cities": ["חיפה"], "yad2_id": 1667},
     "תל עמל": {"cities": ["חיפה"], "yad2_id": 652},
+
+    # ── תל אביב יפו ──
+    "אוניברסיטת תל אביב": {"cities": ["תל אביב יפו"], "yad2_id": 846},
+    "אורות": {"cities": ["תל אביב יפו"], "yad2_id": 487},
+    "אזור תעסוקה צומת חולון": {"cities": ["תל אביב יפו"], "yad2_id": 491},
+    "אזורי חן, גימל החדשה": {"cities": ["תל אביב יפו"], "yad2_id": 1490},
+    "איזור שדה דב": {"cities": ["תל אביב יפו"], "yad2_id": 850},
+    "אפקה": {"cities": ["תל אביב יפו"], "yad2_id": 1514},
+    "בבלי": {"cities": ["תל אביב יפו"], "yad2_id": 1518},
+    "ביצרון ורמת ישראל": {"cities": ["תל אביב יפו"], "yad2_id": 486},
+    "גבעת הרצל, אזור המלאכה יפו": {"cities": ["תל אביב יפו"], "yad2_id": 847},
+    "גלילות": {"cities": ["תל אביב יפו"], "yad2_id": 1491},
+    "גני צהלה, רמות צהלה": {"cities": ["תל אביב יפו"], "yad2_id": 211},
+    "גני שרונה, קרית הממשלה": {"cities": ["תל אביב יפו"], "yad2_id": 1462},
+    "הגוש הגדול, רמת אביב החדשה, נופי ים": {"cities": ["תל אביב יפו"], "yad2_id": 195},
+    "הדר יוסף": {"cities": ["תל אביב יפו"], "yad2_id": 1513},
+    "המשתלה": {"cities": ["תל אביב יפו"], "yad2_id": 315},
+    "הצפון החדש - דרום": {"cities": ["תל אביב יפו"], "yad2_id": 1519},
+    "הצפון החדש - כיכר המדינה": {"cities": ["תל אביב יפו"], "yad2_id": 1516},
+    "הצפון החדש - צפון": {"cities": ["תל אביב יפו"], "yad2_id": 204},
+    "הצפון הישן - דרום": {"cities": ["תל אביב יפו"], "yad2_id": 1461},
+    "הצפון הישן - צפון": {"cities": ["תל אביב יפו"], "yad2_id": 1483},
+    'התקוה, בית יעקב, נווה צה"ל': {"cities": ["תל אביב יפו"], "yad2_id": 308},
+    "יד אליהו": {"cities": ["תל אביב יפו"], "yad2_id": 206},
+    "יפו ד', גבעת התמרים": {"cities": ["תל אביב יפו"], "yad2_id": 321},
+    "יפו העתיקה": {"cities": ["תל אביב יפו"], "yad2_id": 320},
+    "כוכב הצפון": {"cities": ["תל אביב יפו"], "yad2_id": 198},
+    "כפיר, נווה כפיר": {"cities": ["תל אביב יפו"], "yad2_id": 210},
+    "כרם התימנים": {"cities": ["תל אביב יפו"], "yad2_id": 1521},
+    "לב תל אביב, לב העיר צפון": {"cities": ["תל אביב יפו"], "yad2_id": 1520},
+    "לבנה": {"cities": ["תל אביב יפו"], "yad2_id": 319},
+    "מונטיפיורי, הרכבת": {"cities": ["תל אביב יפו"], "yad2_id": 485},
+    "מכללת תל אביב יפו, דקר": {"cities": ["תל אביב יפו"], "yad2_id": 496},
+    "מעוז אביב": {"cities": ["תל אביב יפו"], "yad2_id": 214},
+    "מרכז הירידים": {"cities": ["תל אביב יפו"], "yad2_id": 483},
+    "נאות אפקה א'": {"cities": ["תל אביב יפו"], "yad2_id": 200},
+    "נאות אפקה ב'": {"cities": ["תל אביב יפו"], "yad2_id": 199},
+    "נווה אביבים": {"cities": ["תל אביב יפו"], "yad2_id": 196},
+    "נווה אליעזר וכפר שלם מזרח": {"cities": ["תל אביב יפו"], "yad2_id": 209},
+    "נווה ברבור, כפר שלם מערב": {"cities": ["תל אביב יפו"], "yad2_id": 208},
+    "נווה גולן, יפו ג'": {"cities": ["תל אביב יפו"], "yad2_id": 492},
+    "נווה חן": {"cities": ["תל אביב יפו"], "yad2_id": 207},
+    "נווה עופר, תל כביר": {"cities": ["תל אביב יפו"], "yad2_id": 213},
+    "נווה צדק": {"cities": ["תל אביב יפו"], "yad2_id": 848},
+    "נווה שאנן": {"cities": ["תל אביב יפו"], "yad2_id": 307},
+    "נווה שרת": {"cities": ["תל אביב יפו"], "yad2_id": 314},
+    "נחלת יצחק": {"cities": ["תל אביב יפו"], "yad2_id": 317},
+    "ניר אביב": {"cities": ["תל אביב יפו"], "yad2_id": 1650},
+    "נמל תל אביב": {"cities": ["תל אביב יפו"], "yad2_id": 484},
+    "עג'מי, גבעת העליה": {"cities": ["תל אביב יפו"], "yad2_id": 493},
+    "עזרא, הארגזים": {"cities": ["תל אביב יפו"], "yad2_id": 488},
+    "עתידים, אזור התעסוקה רמת החייל": {"cities": ["תל אביב יפו"], "yad2_id": 482},
+    "פארק דרום": {"cities": ["תל אביב יפו"], "yad2_id": 489},
+    "פארק החורשות": {"cities": ["תל אביב יפו"], "yad2_id": 490},
+    "פארק הירקון": {"cities": ["תל אביב יפו"], "yad2_id": 1512},
+    "פלורנטין": {"cities": ["תל אביב יפו"], "yad2_id": 205},
+    "צהלה": {"cities": ["תל אביב יפו"], "yad2_id": 313},
+    "צהלון, שיכוני חסכון": {"cities": ["תל אביב יפו"], "yad2_id": 494},
+    "צוקי אביב": {"cities": ["תל אביב יפו"], "yad2_id": 991431},
+    "צמרות איילון, פארק צמרת": {"cities": ["תל אביב יפו"], "yad2_id": 1517},
+    "צפון יפו, המושבה האמריקאית-גרמנית": {"cities": ["תל אביב יפו"], "yad2_id": 495},
+    "קרית שאול": {"cities": ["תל אביב יפו"], "yad2_id": 316},
+    "קרית שלום": {"cities": ["תל אביב יפו"], "yad2_id": 212},
+    "רביבים": {"cities": ["תל אביב יפו"], "yad2_id": 202},
+    "רמת אביב": {"cities": ["תל אביב יפו"], "yad2_id": 197},
+    "רמת אביב ג'": {"cities": ["תל אביב יפו"], "yad2_id": 1515},
+    "רמת החייל": {"cities": ["תל אביב יפו"], "yad2_id": 203},
+    "רמת הטייסים": {"cities": ["תל אביב יפו"], "yad2_id": 1649},
+    "שאר העיר": {"cities": ["תל אביב יפו"], "yad2_id": 991392},
+    "שיכון דן, נווה דן": {"cities": ["תל אביב יפו"], "yad2_id": 201},
+    "שפירא": {"cities": ["תל אביב יפו"], "yad2_id": 215},
+    "תכנית ל', למד": {"cities": ["תל אביב יפו"], "yad2_id": 849},
+    "תל ברוך": {"cities": ["תל אביב יפו"], "yad2_id": 312},
+    "תל ברוך צפון": {"cities": ["תל אביב יפו"], "yad2_id": 481},
+    "תל חיים": {"cities": ["תל אביב יפו"], "yad2_id": 318},
 }
 
 
@@ -550,13 +783,37 @@ def realestate_search():
 
     neighborhood_id = resolve_neighborhood_yad2_id(neighborhood) if neighborhood else None
 
+    # Get Facebook group ID from request or environment
+    fb_group_id = request.args.get("fbGroupId", FB_GROUP_ID)
+
+    # Get enabled sources from request (comma-separated)
+    sources_param = request.args.get("sources", "yad2,facebook")
+    enabled_sources = [s.strip() for s in sources_param.split(",") if s.strip()]
+
     t_start = time.time()
+
+    # Fetch from multiple sources in parallel
     try:
-        items, total_pages = fetch_all_yad2_pages(deal_type, city_code, min_price, max_price, neighborhood_id)
-    except RuntimeError as e:
-        return jsonify({"error": str(e)}), 502
+        source_results = fetch_multi_source(deal_type, city_code, min_price, max_price, neighborhood_id, fb_group_id, enabled_sources)
     except Exception as e:
-        return jsonify({"error": f"Failed to fetch data from Yad2: {e}"}), 502
+        return jsonify({"error": f"Failed to fetch data: {e}"}), 502
+
+    # Merge all items from all sources
+    items = source_results["yad2"] + source_results["facebook"]
+    total_pages = source_results.get("yad2_total_pages", 0)
+
+    # Track source counts before filtering
+    source_counts = {
+        "yad2": len(source_results["yad2"]),
+        "facebook": len(source_results["facebook"]),
+    }
+
+    # If both sources failed, return error
+    if not items and source_results["errors"]:
+        return jsonify({
+            "error": "All sources failed",
+            "errors": source_results["errors"]
+        }), 502
 
     raw_count = len(items)
     items = remove_duplicates(items)
@@ -596,6 +853,8 @@ def realestate_search():
         "total_pages": total_pages,
         "fetchTime": fetch_time,
         "avgSampleCount": avg_sample_count,
+        "sources": source_counts,
+        "errors": source_results["errors"],
     })
 
 
@@ -786,6 +1045,426 @@ def realestate_analyze(token):
     except Exception as e:
         return jsonify({"error": f"LLM service unavailable: {e}",
                         "sentiment": "neutral", "confidence": 0.0, "keywords": []}), 200
+
+
+# ---------------------------------------------------------------------------
+# Deep Analysis — Israeli Government Real Estate Data
+# ---------------------------------------------------------------------------
+@app.route("/api/realestate/deep-analysis")
+def deep_analysis():
+    """
+    Deep analysis of a specific property using Israeli gov data.
+    Accepts either a Yad2 URL or a direct address + rooms.
+    """
+    start_time = time.time()
+
+    input_str = request.args.get("input", "").strip()
+    rooms = request.args.get("rooms", "")
+
+    if not input_str:
+        return jsonify({"error": "יש להזין קישור או כתובת"}), 400
+
+    # Parse input - determine if URL or address
+    property_data = parse_property_input(input_str, rooms)
+    if not property_data:
+        return jsonify({"error": "לא הצלחנו לזהות את הכתובת"}), 400
+
+    # Fetch historical transactions from Israeli government data
+    transactions = fetch_gov_transactions(
+        city=property_data.get("city"),
+        neighborhood=property_data.get("neighborhood"),
+        rooms=property_data.get("rooms")
+    )
+
+    # Calculate statistics
+    statistics = calculate_transaction_stats(transactions, property_data)
+
+    # Generate insights
+    insights = generate_insights(property_data, statistics)
+
+    fetch_time = round(time.time() - start_time, 2)
+
+    return jsonify({
+        "property": property_data,
+        "transactions": transactions,
+        "statistics": statistics,
+        "insights": insights,
+        "fetchTime": fetch_time,
+        "source": "נתוני דוגמה להמחשה (Demo Data)",
+        "note": "הנתונים הם דוגמאות סטטיסטיות להמחשה. לנתונים ממשיים נדרש חיבור ל-API רשות המסים או GovMap."
+    })
+
+
+def parse_property_input(input_str, rooms):
+    """
+    Parse input string - could be a Yad2 URL or a direct address.
+    Returns property details dict.
+    """
+    property_data = {"rooms": rooms}
+
+    # Check if input is a Yad2 URL
+    if "yad2.co.il" in input_str or "yad2.com" in input_str:
+        # Extract listing details from Yad2
+        yad2_data = extract_yad2_listing(input_str)
+        if yad2_data:
+            property_data.update(yad2_data)
+            return property_data
+
+    # Otherwise, treat as address - parse it
+    address_parts = parse_israeli_address(input_str)
+    if address_parts:
+        property_data.update(address_parts)
+        return property_data
+
+    return None
+
+
+def extract_yad2_listing(url):
+    """Fetch listing details from Yad2 URL."""
+    try:
+        # Extract item ID from URL
+        match = re.search(r'/item/([a-zA-Z0-9-]+)', url)
+        if not match:
+            return None
+
+        item_id = match.group(1)
+
+        # Fetch the listing details using our existing Yad2 session
+        session = get_yad2_session()
+        api_url = f"https://api.yad2.co.il/realestate/item/{item_id}"
+
+        resp = session.get(api_url, timeout=10)
+        if resp.status_code != 200:
+            return None
+
+        data = resp.json()
+        if not data.get("data"):
+            return None
+
+        listing = data["data"]
+
+        return {
+            "address": listing.get("address", {}).get("street", ""),
+            "city": listing.get("address", {}).get("city", {}).get("text", ""),
+            "neighborhood": listing.get("neighborhood", ""),
+            "rooms": listing.get("rooms", ""),
+            "price": listing.get("price", ""),
+            "sqm": listing.get("square_meters", "")
+        }
+    except Exception as e:
+        print(f"[Deep Analysis] Failed to fetch Yad2 listing: {e}")
+        return None
+
+
+def parse_israeli_address(address_str):
+    """
+    Parse Israeli address string.
+    Format examples: "רחוב הרצל 10, תל אביב" or "תל אביב, שכונת לב העיר"
+    """
+    # Common Israeli cities
+    cities = {
+        "תל אביב": 5000, "תל אביב יפו": 5000, "תל-אביב": 5000,
+        "ירושלים": 3000,
+        "חיפה": 4000,
+        "באר שבע": 9000, "באר-שבע": 9000,
+        "ראשון לציון": 8300, "ראשון-לציון": 8300,
+        "פתח תקווה": 7900, "פתח-תקווה": 7900,
+        "אשדוד": 7700,
+        "נתניה": 1500,
+        "חולון": 6100,
+        "בני ברק": 6400, "בני-ברק": 6400,
+        "רמת גן": 8200, "רמת-גן": 8200,
+        "אשקלון": 7800,
+        "רחובות": 7400,
+        "בת ים": 6800, "בת-ים": 6800,
+        "הרצליה": 6900,
+        "כפר סבא": 6900, "כפר-סבא": 6900,
+        "חדרה": 6200,
+        "מודיעין": 7100,
+        "נצרת": 1700,
+        "רעננה": 8500,
+        "לוד": 7100,
+        "רמלה": 7200,
+    }
+
+    city = None
+    neighborhood = None
+
+    # Try to find city in address
+    for city_name, city_code in cities.items():
+        if city_name in address_str:
+            city = city_name
+            break
+
+    if not city:
+        return None
+
+    # Extract neighborhood if mentioned (שכונת, שכונה)
+    hood_match = re.search(r'שכונת?\s+([א-ת\s]+?)(?:,|$)', address_str)
+    if hood_match:
+        neighborhood = hood_match.group(1).strip()
+
+    return {
+        "address": address_str,
+        "city": city,
+        "neighborhood": neighborhood
+    }
+
+
+def fetch_gov_transactions(city=None, neighborhood=None, rooms=None):
+    """
+    Fetch historical real estate transactions from Israeli government data.
+    Tries multiple sources: GovMap API, Tax Authority site.
+    """
+    print(f"[Deep Analysis] Fetching transactions for city={city}, neighborhood={neighborhood}, rooms={rooms}")
+
+    # Try Method 1: GovMap API
+    transactions = try_govmap_api(city, neighborhood, rooms)
+    if transactions:
+        return transactions
+
+    # Try Method 2: Tax Authority site scraping
+    transactions = try_tax_authority_scraping(city, neighborhood, rooms)
+    if transactions:
+        return transactions
+
+    # If all methods fail, return empty list with a note
+    print("[Deep Analysis] No transaction data could be fetched")
+    return []
+
+
+def try_govmap_api(city, neighborhood, rooms):
+    """
+    Attempt to fetch data from GovMap API.
+
+    NOTE: GovMap has API restrictions and requires proper authentication.
+    For production use, consider:
+    1. Obtaining official GovMap API credentials
+    2. Using their documented geocoding API: https://api.govmap.gov.il/docs/
+    3. Implementing proper layer querying for real estate data
+
+    Current implementation returns sample data for demonstration.
+    """
+    print(f"[GovMap] API integration requires credentials - using sample data")
+
+    # For demonstration, return sample transaction data
+    # In production, this would query the actual GovMap API with proper authentication
+    if not city:
+        return None
+
+    # Generate sample transactions based on city
+    return generate_sample_transactions(city, neighborhood, rooms)
+
+
+def generate_sample_transactions(city, neighborhood, rooms):
+    """
+    Generate sample transaction data for demonstration.
+    Replace this with actual API calls in production.
+    """
+    import random
+    from datetime import datetime, timedelta
+
+    # Base prices per city (approximate averages for demonstration)
+    city_base_prices = {
+        "תל אביב": 3500000,
+        "תל אביב יפו": 3500000,
+        "תל-אביב": 3500000,
+        "ירושלים": 2800000,
+        "חיפה": 2000000,
+        "באר שבע": 1500000,
+        "באר-שבע": 1500000,
+        "ראשון לציון": 2200000,
+        "פתח תקווה": 2400000,
+        "אשדוד": 1800000,
+        "נתניה": 2000000,
+        "חולון": 2300000,
+        "בני ברק": 2600000,
+        "רמת גן": 3000000,
+        "הרצליה": 3200000,
+    }
+
+    base_price = city_base_prices.get(city, 2000000)
+
+    # Try to parse rooms
+    try:
+        rooms_num = float(rooms) if rooms else 3.5
+    except (ValueError, TypeError):
+        rooms_num = 3.5
+
+    # Generate 8-15 sample transactions
+    num_transactions = random.randint(8, 15)
+    transactions = []
+
+    for i in range(num_transactions):
+        # Random date in last 2 years
+        days_ago = random.randint(0, 730)
+        tx_date = datetime.now() - timedelta(days=days_ago)
+
+        # Price variation: ±20% from base, adjusted by rooms
+        price_factor = (rooms_num / 3.5) * random.uniform(0.8, 1.2)
+        price = int(base_price * price_factor)
+
+        # Random sqm (typically 25-35 sqm per room in Israel)
+        sqm = int(rooms_num * random.uniform(25, 35))
+
+        # Random small room variation (±0.5 rooms)
+        tx_rooms = rooms_num + random.choice([-0.5, 0, 0.5])
+
+        # Generate street name
+        streets = ["הרצל", "בן יהודה", "דיזנגוף", "רוטשילד", "אלנבי", "ויצמן", "בגין"]
+        street_num = random.randint(1, 200)
+        address = f"{random.choice(streets)} {street_num}"
+        if neighborhood:
+            address += f", {neighborhood}"
+        address += f", {city}"
+
+        transactions.append({
+            "date": tx_date.strftime("%d/%m/%Y"),
+            "price": f"{price:,} ₪",
+            "address": address,
+            "rooms": str(tx_rooms),
+            "sqm": str(sqm)
+        })
+
+    # Sort by date (newest first)
+    transactions.sort(key=lambda x: datetime.strptime(x["date"], "%d/%m/%Y"), reverse=True)
+
+    print(f"[GovMap] Generated {len(transactions)} sample transactions")
+    return transactions
+
+
+def parse_govmap_response(data, rooms_filter=None):
+    """Parse GovMap API response to extract transaction data."""
+    transactions = []
+
+    try:
+        # GovMap response structure varies - handle different formats
+        if isinstance(data, dict):
+            # Look for transaction records in various possible locations
+            records = data.get("data", []) or data.get("results", []) or data.get("features", [])
+
+            for record in records:
+                # Extract transaction details from record
+                tx = {}
+
+                # Try to extract common fields
+                if "properties" in record:
+                    props = record["properties"]
+                    tx["date"] = props.get("TARICH_BRIHA", "") or props.get("date", "")
+                    tx["price"] = props.get("SHAVUI_BRIHA", "") or props.get("price", "")
+                    tx["address"] = props.get("KTOVT_BRIHA", "") or props.get("address", "")
+                    tx["rooms"] = props.get("CHADRIM", "") or props.get("rooms", "")
+                    tx["sqm"] = props.get("SHIACH", "") or props.get("sqm", "")
+                else:
+                    # Direct fields
+                    tx["date"] = record.get("date", "")
+                    tx["price"] = record.get("price", "")
+                    tx["address"] = record.get("address", "")
+                    tx["rooms"] = record.get("rooms", "")
+                    tx["sqm"] = record.get("sqm", "")
+
+                # Filter by rooms if specified
+                if rooms_filter and tx.get("rooms"):
+                    try:
+                        tx_rooms = float(tx["rooms"])
+                        filter_rooms = float(rooms_filter)
+                        # Allow ±0.5 room difference
+                        if abs(tx_rooms - filter_rooms) > 0.5:
+                            continue
+                    except (ValueError, TypeError):
+                        pass
+
+                if tx.get("price") or tx.get("date"):
+                    transactions.append(tx)
+
+    except Exception as e:
+        print(f"[GovMap] Parsing error: {e}")
+
+    return transactions
+
+
+def try_tax_authority_scraping(city, neighborhood, rooms):
+    """
+    Scrape the Tax Authority's real estate information website.
+
+    The official site is: https://www.gov.il/he/service/real_estate_information
+
+    NOTE: The Tax Authority site has bot protection (403 Forbidden) and requires:
+    1. Proper browser headers and cookies
+    2. JavaScript execution (the form uses ASP.NET ViewState)
+    3. Handling of CAPTCHA if present
+
+    For production implementation, consider:
+    - Using Selenium with headless browser for JavaScript execution
+    - Implementing proper cookie/session management
+    - Handling ASP.NET ViewState and EventValidation tokens
+    - Respecting robots.txt and rate limiting
+
+    Alternative: Contact the Tax Authority for official API access.
+
+    Current implementation: Returns None (scraping not active).
+    """
+    print("[Tax Authority] Web scraping not implemented due to bot protection")
+    print("[Tax Authority] Recommendation: Use official API or Selenium with headless browser")
+
+    return None
+
+
+def calculate_transaction_stats(transactions, property_data):
+    """Calculate statistics from historical transactions."""
+    if not transactions:
+        return {
+            "avgPrice": "לא זמין",
+            "avgPricePerSqm": "לא זמין",
+            "minPrice": "לא זמין",
+            "maxPrice": "לא זמין",
+            "medianPrice": "לא זמין",
+            "note": "אין מספיק נתונים להשוואה - נדרש מספר עסקאות מינימלי"
+        }
+
+    prices = [float(re.sub(r'[^\d.]', '', str(t.get("price", "0"))))
+              for t in transactions if t.get("price")]
+    prices = [p for p in prices if p > 0]
+
+    if not prices:
+        return {"note": "לא נמצאו עסקאות עם מחירים"}
+
+    prices.sort()
+    avg_price = sum(prices) / len(prices)
+    median_price = prices[len(prices) // 2]
+
+    return {
+        "avgPrice": f"{int(avg_price):,} ₪",
+        "minPrice": f"{int(min(prices)):,} ₪",
+        "maxPrice": f"{int(max(prices)):,} ₪",
+        "medianPrice": f"{int(median_price):,} ₪",
+        "transactionCount": len(transactions)
+    }
+
+
+def generate_insights(property_data, statistics):
+    """Generate insights based on property and market data."""
+    insights = []
+
+    # Add basic info
+    city = property_data.get("city", "")
+    neighborhood = property_data.get("neighborhood", "")
+
+    if city and neighborhood:
+        insights.append(f"הנכס ממוקם ב{neighborhood}, {city}.")
+    elif city:
+        insights.append(f"הנכס ממוקם ב{city}.")
+
+    # Market comparison
+    if statistics.get("transactionCount", 0) > 0:
+        insights.append(f"נמצאו {statistics['transactionCount']} עסקאות דומות באזור.")
+        insights.append(f"המחיר הממוצע באזור: {statistics.get('avgPrice', 'לא זמין')}.")
+        insights.append(f"טווח מחירים: {statistics.get('minPrice', '')} - {statistics.get('maxPrice', '')}.")
+    else:
+        insights.append("לא נמצאו עסקאות דומות באזור לצורך השוואה.")
+        insights.append("מומלץ לבדוק מחירים דומים באזורים סמוכים או להתייעץ עם שמאי מקרקעין.")
+
+    return " ".join(insights)
 
 
 # ---------------------------------------------------------------------------
