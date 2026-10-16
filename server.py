@@ -3,11 +3,20 @@ import re
 import json
 import time
 import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from flask import Flask, send_from_directory, jsonify, request
 
-import facebook_imports
 from polite_fetcher import AccessDenied, FetchError, RobotsDisallowed, default_fetcher
+
+# Facebook scraper integration
+try:
+    from facebook_scraper import get_posts
+    import facebook_parser
+    FACEBOOK_AVAILABLE = True
+except ImportError:
+    FACEBOOK_AVAILABLE = False
+    print("[Facebook] facebook-scraper not installed, skipping Facebook integration")
 
 # GovMap API configuration
 GOVMAP_API_TOKEN = os.environ.get("GOVMAP_API_TOKEN", "")
@@ -146,21 +155,89 @@ def fetch_all_yad2_pages(deal_type, city_code, neighborhood_id=None):
 
 
 # ---------------------------------------------------------------------------
-# Facebook — manually imported posts (see facebook_imports.py)
+# Facebook Group scraper — extract real estate listings from public groups
 # ---------------------------------------------------------------------------
-FB_MOCK = os.environ.get("FB_MOCK", "") == "1"
+FB_GROUP_ID = os.environ.get("FB_GROUP_ID", "457465901082882")
+FB_MAX_PAGES = int(os.environ.get("FB_MAX_PAGES", "5"))
+FB_TIMEOUT = int(os.environ.get("FB_TIMEOUT", "60"))
+FB_COOKIES = None
+
+# Load Facebook cookies if available
+if FACEBOOK_AVAILABLE:
+    fb_cookies_file = os.path.join(os.path.dirname(__file__), "fb_cookies.json")
+    if os.path.exists(fb_cookies_file):
+        try:
+            with open(fb_cookies_file, 'r') as f:
+                FB_COOKIES = json.load(f)
+            print("[Facebook] Loaded cookies from fb_cookies.json")
+        except Exception as e:
+            print(f"[Facebook] Failed to load cookies: {e}")
+    else:
+        print("[Facebook] No cookies file found (fb_cookies.json). Facebook scraping will not work without authentication.")
 
 
-def _same_city(a, b):
-    return bool(a and b) and (a in b or b in a)
+def fetch_facebook_group(group_id=None, max_pages=None):
+    """
+    Fetch and parse posts from a Facebook group.
+    Returns list of parsed items with unified schema.
+    """
+    if not FACEBOOK_AVAILABLE:
+        print("[Facebook] Skipping - facebook-scraper not installed")
+        return []
 
+    group_id = group_id or FB_GROUP_ID
+    max_pages = max_pages or FB_MAX_PAGES
 
-def get_facebook_items(settlement=""):
-    """Imported posts whose detected city matches `settlement` (or has no city)."""
-    items = facebook_imports.list_imports()
-    if FB_MOCK:
-        items = items + facebook_imports.mock_items()
-    return [it for it in items if not it.get("city") or not settlement or _same_city(it["city"], settlement)]
+    if not group_id:
+        print("[Facebook] No group ID provided")
+        return []
+
+    try:
+        print(f"[Facebook] Fetching group {group_id}, max {max_pages} pages...")
+
+        # Check if cookies are available
+        if not FB_COOKIES:
+            print("[Facebook] Warning: No authentication cookies found.")
+            print("[Facebook] Using mock data for testing. Create fb_cookies.json for real scraping.")
+
+            # Use mock data for testing
+            try:
+                from mock_facebook_data import MOCK_FACEBOOK_POSTS
+                items = []
+                for post in MOCK_FACEBOOK_POSTS:
+                    parsed = facebook_parser.parse_post(post)
+                    if parsed:
+                        items.append(parsed)
+                print(f"[Facebook] Returning {len(items)} mock items for testing")
+                return items
+            except Exception as e:
+                print(f"[Facebook] Mock data failed: {e}")
+                return []
+
+        t_start = time.time()
+
+        # Fetch posts from Facebook group with cookies
+        posts = []
+        for post in get_posts(
+            group=group_id,
+            pages=max_pages,
+            timeout=FB_TIMEOUT,
+            cookies=FB_COOKIES,
+            options={"comments": False, "reactors": False, "allow_extra_requests": False}
+        ):
+            posts.append(post)
+
+        # Parse posts into unified schema
+        items = facebook_parser.parse_posts_batch(posts)
+
+        elapsed = round(time.time() - t_start, 1)
+        print(f"[Facebook] Fetched {len(posts)} posts, parsed {len(items)} valid listings in {elapsed}s")
+
+        return items
+
+    except Exception as e:
+        print(f"[Facebook] Error fetching group: {e}")
+        return []
 
 
 def describe_fetch_error(e):
@@ -174,30 +251,58 @@ def describe_fetch_error(e):
     return f"שליפת הנתונים נכשלה: {e}"
 
 
-def fetch_multi_source(deal_type, city_code, settlement, neighborhood_id=None, enabled_sources=None):
+def fetch_multi_source(deal_type, city_code, neighborhood_id=None, fb_group_id=None, enabled_sources=None):
     """
-    Collect listings from all enabled sources.
-    Returns dict with per-source items and user-facing error messages.
+    Fetch listings from multiple sources in parallel (Yad2 + Facebook).
+    Returns dict with results and errors from each source.
+
+    Args:
+        enabled_sources: list of sources to fetch from (["yad2", "facebook"]). Default: both.
     """
     if enabled_sources is None:
         enabled_sources = ["yad2", "facebook"]
 
-    results = {"yad2": [], "facebook": [], "errors": {}, "yad2_total_pages": 0, "yad2_pages_fetched": 0}
+    results = {
+        "yad2": [],
+        "facebook": [],
+        "errors": {},
+        "yad2_total_pages": 0,
+        "yad2_pages_fetched": 0,
+    }
 
-    if "yad2" in enabled_sources:
-        try:
-            items, total_pages, pages_fetched = fetch_all_yad2_pages(deal_type, city_code, neighborhood_id)
-            for item in items:
-                item["source"] = "yad2"
-            results["yad2"] = items
-            results["yad2_total_pages"] = total_pages
-            results["yad2_pages_fetched"] = pages_fetched
-        except Exception as e:
-            print(f"[yad2] Error: {e}")
-            results["errors"]["yad2"] = describe_fetch_error(e)
+    # Use ThreadPoolExecutor for source-level parallelism
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = {}
 
-    if "facebook" in enabled_sources:
-        results["facebook"] = get_facebook_items(settlement)
+        # Submit Yad2 fetch (if enabled)
+        if "yad2" in enabled_sources:
+            yad2_future = pool.submit(fetch_all_yad2_pages, deal_type, city_code, neighborhood_id)
+            futures[yad2_future] = "yad2"
+
+        # Submit Facebook fetch (if enabled and available)
+        if "facebook" in enabled_sources and FACEBOOK_AVAILABLE and fb_group_id:
+            fb_future = pool.submit(fetch_facebook_group, fb_group_id)
+            futures[fb_future] = "facebook"
+
+        # Collect results as they complete
+        for future in as_completed(futures):
+            source = futures[future]
+            try:
+                if source == "yad2":
+                    items, total_pages, pages_fetched = future.result()
+                    # Add source field to Yad2 items
+                    for item in items:
+                        item["source"] = "yad2"
+                    results["yad2"] = items
+                    results["yad2_total_pages"] = total_pages
+                    results["yad2_pages_fetched"] = pages_fetched
+                elif source == "facebook":
+                    items = future.result()
+                    # Source field already added by parser
+                    results["facebook"] = items
+            except Exception as e:
+                print(f"[{source}] Error: {e}")
+                results["errors"][source] = describe_fetch_error(e) if source == "yad2" else str(e)
 
     return results
 
@@ -242,9 +347,8 @@ def filter_items(items, min_sqm=None, max_sqm=None, neighborhood=None, min_price
                 continue
 
         # neighborhood filter (substring match for Hebrew)
-        # (imported Facebook posts have no structured neighborhood — match their text)
         if neighborhood:
-            item_nb = item.get("neighborhood") or item.get("description") or ""
+            item_nb = item.get("neighborhood") or ""
             if neighborhood not in item_nb:
                 continue
 
@@ -558,6 +662,9 @@ def realestate_search():
 
     neighborhood_id = resolve_neighborhood_yad2_id(neighborhood) if neighborhood else None
 
+    # Get Facebook group ID from request or environment
+    fb_group_id = request.args.get("fbGroupId", FB_GROUP_ID)
+
     # Get enabled sources from request (comma-separated)
     sources_param = request.args.get("sources", "yad2,facebook")
     enabled_sources = [s.strip() for s in sources_param.split(",") if s.strip()]
@@ -566,7 +673,7 @@ def realestate_search():
 
     # Fetch from multiple sources in parallel
     try:
-        source_results = fetch_multi_source(deal_type, city_code, settlement, neighborhood_id, enabled_sources)
+        source_results = fetch_multi_source(deal_type, city_code, neighborhood_id, fb_group_id, enabled_sources)
     except Exception as e:
         return jsonify({"error": f"Failed to fetch data: {e}"}), 502
 
@@ -715,28 +822,6 @@ def realestate_cancel():
 def fetcher_status():
     """Compliance/health view of the polite fetcher: rate limits, cache, blocks."""
     return jsonify(fetcher.status())
-
-
-@app.route("/api/facebook/imports", methods=["GET"])
-def facebook_list_imports():
-    return jsonify(facebook_imports.list_imports())
-
-
-@app.route("/api/facebook/imports", methods=["POST"])
-def facebook_add_import():
-    """Import a Facebook post the user pasted: {"text": "...", "url": "..."}."""
-    body = request.get_json(silent=True) or {}
-    item, error = facebook_imports.import_post(body.get("text", ""), body.get("url", ""))
-    if error:
-        return jsonify({"error": error}), 422
-    return jsonify(item), 201
-
-
-@app.route("/api/facebook/imports/<token>", methods=["DELETE"])
-def facebook_delete_import(token):
-    if not facebook_imports.delete_import(token):
-        return jsonify({"error": "not found"}), 404
-    return "", 204
 
 
 # ---------------------------------------------------------------------------

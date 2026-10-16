@@ -1,0 +1,25 @@
+# Facebook Authentication Setup
+
+## How to get Facebook cookies:
+
+1. **Login to Facebook** in your browser
+2. **Open Developer Tools** (F12)
+3. **Go to Application/Storage → Cookies**
+4. **Copy these cookies:**
+   - c_user
+   - xs
+   - datr (optional)
+
+5. **Save them in a file** called `fb_cookies.json`:
+
+{
+  "c_user": "YOUR_USER_ID",
+  "xs": "YOUR_XS_COOKIE",
+  "datr": "YOUR_DATR_COOKIE"
+}
+
+6. **Update server.py** to load cookies before scraping
+
+## Alternative: Use environment variables
+export FB_COOKIE_C_USER="your_c_user_value"
+export FB_COOKIE_XS="your_xs_value"

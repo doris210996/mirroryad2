@@ -258,34 +258,6 @@
             color: #ef4444;
         }
 
-        /* ── Facebook manual import ── */
-        .fb-import {
-            margin-top: 14px;
-            font-size: 0.88rem;
-        }
-        .fb-import summary {
-            cursor: pointer;
-            color: #3b82f6;
-            font-weight: 600;
-        }
-        .fb-import-hint {
-            color: #9ca3af;
-            font-size: 0.8rem;
-            margin: 8px 0;
-        }
-        .fb-import textarea,
-        .fb-import input {
-            width: 100%;
-            box-sizing: border-box;
-            margin-bottom: 8px;
-            font-family: inherit;
-        }
-        .fb-import-row {
-            display: flex;
-            gap: 12px;
-            align-items: center;
-        }
-
         /* ── Info Bar ── */
         .re-info-bar {
             display: flex;
@@ -887,16 +859,6 @@
                 <button id="reRefreshBtn" class="refresh-btn" onclick="reToggleRefresh()">רענון אוטומטי: כבוי</button>
                 <button class="cancel" onclick="reCancel()">ביטול</button>
             </div>
-            <details class="fb-import">
-                <summary>ייבוא פוסט מפייסבוק</summary>
-                <p class="fb-import-hint">העתיקו את טקסט הפוסט מקבוצת הפייסבוק והדביקו כאן. המערכת מחלצת מחיר, חדרים, מ"ר ועיר — ללא סריקה אוטומטית של פייסבוק.</p>
-                <textarea id="fbImportText" rows="4" placeholder="להשכרה בפלורנטין 2 חד׳ 50 מ״ר 4,200 ₪ ..."></textarea>
-                <input type="url" id="fbImportUrl" placeholder="קישור לפוסט (לא חובה)">
-                <div class="fb-import-row">
-                    <button class="search-btn" onclick="fbImport()">ייבוא</button>
-                    <span id="fbImportStatus"></span>
-                </div>
-            </details>
         </div>
 
         <div id="reInfoBar"></div>
@@ -1001,31 +963,6 @@
                 <span>ממוצע מחושב על: <span class="info-value">${avgCount} נכסים</span></span>
                 ${errorMsg}
             </div>`;
-        }
-
-        // ── Manual Facebook post import ──
-        async function fbImport() {
-            const status = document.getElementById('fbImportStatus');
-            const text = document.getElementById('fbImportText').value;
-            const url = document.getElementById('fbImportUrl').value;
-            status.style.color = '#9ca3af';
-            status.textContent = 'מייבא...';
-            try {
-                const res = await fetch('/api/facebook/imports', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ text, url }),
-                });
-                const data = await res.json();
-                if (!res.ok) throw new Error(data.error || 'הייבוא נכשל');
-                status.style.color = '#22c55e';
-                status.textContent = `יובא: ${data.price}${data.rooms ? ' · ' + data.rooms : ''}${data.city ? ' · ' + data.city : ''}`;
-                document.getElementById('fbImportText').value = '';
-                document.getElementById('fbImportUrl').value = '';
-            } catch (e) {
-                status.style.color = '#ef4444';
-                status.textContent = e.message;
-            }
         }
 
         // ── Tom Select — neighborhood-first picker ──

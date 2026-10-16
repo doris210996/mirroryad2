@@ -8,8 +8,3 @@ llm-service/.cache/
 llm-service/build/
 *.gguf
 all_hoods_raw.json
-
-# Local data
-fb_imports.json
-fb_imports.json.tmp
-fb_cookies.json
