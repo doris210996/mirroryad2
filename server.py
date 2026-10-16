@@ -3,21 +3,11 @@ import re
 import json
 import time
 import datetime
-import threading
-import subprocess
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from flask import Flask, send_from_directory, jsonify, request
-from curl_cffi import requests as cffi_requests
 
-# Facebook scraper integration
-try:
-    from facebook_scraper import get_posts
-    import facebook_parser
-    FACEBOOK_AVAILABLE = True
-except ImportError:
-    FACEBOOK_AVAILABLE = False
-    print("[Facebook] facebook-scraper not installed, skipping Facebook integration")
+import facebook_imports
+from polite_fetcher import AccessDenied, FetchError, RobotsDisallowed, default_fetcher
 
 # GovMap API configuration
 GOVMAP_API_TOKEN = os.environ.get("GOVMAP_API_TOKEN", "")
@@ -27,38 +17,8 @@ else:
     print("[GovMap] No API token - using sample data for deep analysis")
 
 app = Flask(__name__)
-
-# ---------------------------------------------------------------------------
-# Proxy rotation — stop/start VM to get a fresh IP when blocked
-# ---------------------------------------------------------------------------
-ROTATE_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rotate_proxy.sh")
-_rotate_lock = threading.Lock()
-_last_rotate = 0  # epoch timestamp of last rotation
-
-
-def rotate_proxy_ip():
-    """Rotate the proxy VM's IP. Deduplicates calls within a 120s window."""
-    global _last_rotate
-    with _rotate_lock:
-        if time.time() - _last_rotate < 120:
-            print("[Rotate] Skipped — rotated less than 2 min ago")
-            return
-        _last_rotate = time.time()
-    print("[Rotate] Triggering IP rotation...")
-    try:
-        result = subprocess.run(
-            ["bash", ROTATE_SCRIPT],
-            capture_output=True, text=True, timeout=180,
-        )
-        print(result.stdout)
-        if result.returncode != 0:
-            print(f"[Rotate] ERROR: {result.stderr}")
-        else:
-            # Clear all sessions so they reconnect through new proxy
-            reset_yad2_session()
-            _thread_local.__dict__.clear()
-    except Exception as e:
-        print(f"[Rotate] Failed: {e}")
+fetcher = default_fetcher()
+print(f"[Fetcher] User-Agent: {fetcher.user_agent}")
 
 # ---------------------------------------------------------------------------
 # MongoDB setup (optional — works without it, just no change detection)
@@ -83,92 +43,46 @@ def handle_exception(e):
 
 
 # ---------------------------------------------------------------------------
-# Yad2 scraper using curl_cffi — rotates browser fingerprints to avoid blocks
+# Yad2 — fetched through the polite fetcher (robots.txt, rate limit, cache).
+# Yad2's robots.txt disallows the `price=` query parameter, so we request the
+# city/neighborhood feed only and apply the price range locally.
 # ---------------------------------------------------------------------------
-SOCKS_PROXY = os.environ.get("YAD2_PROXY", "socks5://127.0.0.1:1080")
-_BROWSERS = ["edge99", "safari", "safari_ios", "chrome"]
-_browser_idx = 0
-_yad2_session = None
+YAD2_MAX_PAGES = int(os.environ.get("YAD2_MAX_PAGES", "10"))
+DEFAULT_MAX_PRICE = 100000000
+_NEXT_DATA_RE = re.compile(r'__NEXT_DATA__[^>]*>(.*?)</script>', re.DOTALL)
 
 
-def _make_session(browser=None):
-    """Create a curl_cffi session with proxy and browser fingerprint."""
-    global _browser_idx
-    if browser is None:
-        browser = _BROWSERS[_browser_idx % len(_BROWSERS)]
-    s = cffi_requests.Session(impersonate=browser, proxy=SOCKS_PROXY)
-    return s
+def _has_next_data(text):
+    return "__NEXT_DATA__" in text
 
 
-def get_yad2_session():
-    global _yad2_session, _browser_idx
-    if _yad2_session is None:
-        browser = _BROWSERS[_browser_idx % len(_BROWSERS)]
-        print(f"[Yad2] Creating session with {browser} fingerprint via proxy")
-        _yad2_session = _make_session(browser)
-        _yad2_session.get("https://www.yad2.co.il/", timeout=15)
-    return _yad2_session
+def fetch_next_data(url):
+    """Fetch a Yad2 page and return its parsed __NEXT_DATA__ JSON."""
+    resp = fetcher.get(url, validate=_has_next_data)
+    match = _NEXT_DATA_RE.search(resp.text)
+    if not match:
+        raise FetchError("Could not extract data from Yad2 page")
+    return json.loads(match.group(1))
 
 
-def reset_yad2_session():
-    """Drop the current session and rotate to the next browser fingerprint."""
-    global _yad2_session, _browser_idx
-    _browser_idx += 1
-    _yad2_session = None
-
-
-def fetch_yad2_page(deal_type, city_code, min_price, max_price, page, neighborhood_id=None):
-    """Fetch a Yad2 search results page and extract data from __NEXT_DATA__."""
+def fetch_yad2_page(deal_type, city_code, page, neighborhood_id=None):
+    """Fetch one Yad2 search results page and return its feed data."""
     deal_path = "rent" if deal_type == "rent" else "forsale"
-    url = (
-        f"https://www.yad2.co.il/realestate/{deal_path}"
-        f"?city={city_code}&price={min_price}-{max_price}&page={page}"
-    )
+    url = f"https://www.yad2.co.il/realestate/{deal_path}?city={city_code}&page={page}"
     if neighborhood_id:
         url += f"&neighborhood={neighborhood_id}"
 
-    session = get_yad2_session()
-    resp = session.get(url, timeout=15)
-
-    match = re.search(
-        r'__NEXT_DATA__[^>]*>(.*?)</script>', resp.text, re.DOTALL
-    )
-    if not match:
-        is_captcha = "ShieldSquare" in resp.text or "captcha" in resp.text.lower()
-        reset_yad2_session()
-        # Retry with a different browser fingerprint
-        session = get_yad2_session()
-        resp = session.get(url, timeout=15)
-        match = re.search(
-            r'__NEXT_DATA__[^>]*>(.*?)</script>', resp.text, re.DOTALL
-        )
-    if not match:
-        is_captcha = "ShieldSquare" in resp.text or "captcha" in resp.text.lower()
-        reset_yad2_session()
-        if is_captcha:
-            print("[Yad2] Captcha detected — triggering proxy IP rotation")
-            threading.Thread(target=rotate_proxy_ip, daemon=True).start()
-        raise RuntimeError("Could not extract data from Yad2 page")
-
-    next_data = json.loads(match.group(1))
     queries = (
-        next_data.get("props", {})
+        fetch_next_data(url).get("props", {})
         .get("pageProps", {})
         .get("dehydratedState", {})
         .get("queries", [])
     )
-
-    feed = None
     for q in queries:
         key = q.get("queryKey", [""])[0]
         if "feed" in str(key) and deal_path in str(key):
-            feed = q["state"]["data"]
-            break
-
-    if not feed:
-        raise RuntimeError("No feed data found in Yad2 response")
-
-    return feed
+            return q["state"]["data"]
+    raise FetchError("No feed data found in Yad2 response")
 
 
 def extract_items(feed):
@@ -205,232 +119,85 @@ def extract_items(feed):
     return items
 
 
-MAX_PAGES = 20        # cap to avoid excessive fetching
-MAX_WORKERS = 4       # concurrent page fetches
-PAGE_DELAY = 0.15     # small stagger between thread launches
-
-# Thread-local storage for per-thread Yad2 sessions
-_thread_local = threading.local()
-_thread_browser_counter = 0
-_thread_browser_lock = threading.Lock()
-
-
-def _get_thread_session():
-    """Return a per-thread curl_cffi session with a rotated browser fingerprint."""
-    global _thread_browser_counter
-    if not hasattr(_thread_local, "session"):
-        with _thread_browser_lock:
-            browser = _BROWSERS[_thread_browser_counter % len(_BROWSERS)]
-            _thread_browser_counter += 1
-        s = _make_session(browser)
-        s.get("https://www.yad2.co.il/", timeout=15)
-        _thread_local.session = s
-    return _thread_local.session
-
-
-def _fetch_page_direct(deal_type, city_code, min_price, max_price, page, neighborhood_id=None):
-    """Fetch a single page using the thread's own session. Thread-safe."""
-    session = _get_thread_session()
-    deal_path = "rent" if deal_type == "rent" else "forsale"
-    url = (
-        f"https://www.yad2.co.il/realestate/{deal_path}"
-        f"?city={city_code}&price={min_price}-{max_price}&page={page}"
-    )
-    if neighborhood_id:
-        url += f"&neighborhood={neighborhood_id}"
-    resp = session.get(url, timeout=20)
-    match = re.search(r'__NEXT_DATA__[^>]*>(.*?)</script>', resp.text, re.DOTALL)
-    if not match:
-        return None
-    next_data = json.loads(match.group(1))
-    queries = (
-        next_data.get("props", {})
-        .get("pageProps", {})
-        .get("dehydratedState", {})
-        .get("queries", [])
-    )
-    for q in queries:
-        key = q.get("queryKey", [""])[0]
-        if "feed" in str(key) and deal_path in str(key):
-            return q["state"]["data"]
-    return None
-
-
-def _fetch_page_worker(deal_type, city_code, min_price, max_price, page, neighborhood_id=None):
-    """Worker for concurrent page fetching. Uses thread-local session."""
-    try:
-        feed = _fetch_page_direct(deal_type, city_code, min_price, max_price, page, neighborhood_id)
-        return page, extract_items(feed) if feed else []
-    except Exception as e:
-        print(f"[Yad2] Failed to fetch page {page}: {e}")
-        return page, []
-
-
-def fetch_all_yad2_pages(deal_type, city_code, min_price, max_price, neighborhood_id=None):
-    """Fetch all pages of Yad2 results concurrently. Returns (items, total_pages)."""
-    # Page 1 first to discover total_pages (uses main thread session)
-    feed = fetch_yad2_page(deal_type, city_code, min_price, max_price, 1, neighborhood_id)
+def fetch_all_yad2_pages(deal_type, city_code, neighborhood_id=None):
+    """
+    Fetch Yad2 result pages one at a time (the fetcher paces requests per host).
+    Returns (items, total_pages, pages_fetched). If Yad2 stops us part-way, the
+    pages already fetched are returned; if page 1 fails, the error propagates.
+    """
+    feed = fetch_yad2_page(deal_type, city_code, 1, neighborhood_id)
     total_pages = feed.get("pagination", {}).get("totalPages", 1)
     all_items = extract_items(feed)
+    pages_fetched = 1
 
-    pages_to_fetch = min(total_pages, MAX_PAGES)
-    if pages_to_fetch < 2:
-        return all_items, total_pages
-
-    remaining = list(range(2, pages_to_fetch + 1))
     t_start = time.time()
-
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
-        futures = {}
-        for pg in remaining:
-            time.sleep(PAGE_DELAY)  # small stagger to avoid burst
-            fut = pool.submit(_fetch_page_worker, deal_type, city_code, min_price, max_price, pg, neighborhood_id)
-            futures[fut] = pg
-
-        for fut in as_completed(futures):
-            page_num, items = fut.result()
-            all_items.extend(items)
+    for page in range(2, min(total_pages, YAD2_MAX_PAGES) + 1):
+        try:
+            feed = fetch_yad2_page(deal_type, city_code, page, neighborhood_id)
+        except FetchError as e:
+            print(f"[Yad2] Stopping at page {page}: {e}")
+            break
+        all_items.extend(extract_items(feed))
+        pages_fetched += 1
 
     elapsed = round(time.time() - t_start, 1)
-    print(f"[Yad2] Fetched {pages_to_fetch}/{total_pages} pages in {elapsed}s, {len(all_items)} raw items")
-    return all_items, total_pages
+    print(f"[Yad2] Fetched {pages_fetched}/{total_pages} pages in {elapsed}s, {len(all_items)} raw items")
+    return all_items, total_pages, pages_fetched
 
 
 # ---------------------------------------------------------------------------
-# Facebook Group scraper — extract real estate listings from public groups
+# Facebook — manually imported posts (see facebook_imports.py)
 # ---------------------------------------------------------------------------
-FB_GROUP_ID = os.environ.get("FB_GROUP_ID", "457465901082882")
-FB_MAX_PAGES = int(os.environ.get("FB_MAX_PAGES", "5"))
-FB_TIMEOUT = int(os.environ.get("FB_TIMEOUT", "60"))
-FB_COOKIES = None
-
-# Load Facebook cookies if available
-if FACEBOOK_AVAILABLE:
-    fb_cookies_file = os.path.join(os.path.dirname(__file__), "fb_cookies.json")
-    if os.path.exists(fb_cookies_file):
-        try:
-            with open(fb_cookies_file, 'r') as f:
-                FB_COOKIES = json.load(f)
-            print("[Facebook] Loaded cookies from fb_cookies.json")
-        except Exception as e:
-            print(f"[Facebook] Failed to load cookies: {e}")
-    else:
-        print("[Facebook] No cookies file found (fb_cookies.json). Facebook scraping will not work without authentication.")
+FB_MOCK = os.environ.get("FB_MOCK", "") == "1"
 
 
-def fetch_facebook_group(group_id=None, max_pages=None):
+def _same_city(a, b):
+    return bool(a and b) and (a in b or b in a)
+
+
+def get_facebook_items(settlement=""):
+    """Imported posts whose detected city matches `settlement` (or has no city)."""
+    items = facebook_imports.list_imports()
+    if FB_MOCK:
+        items = items + facebook_imports.mock_items()
+    return [it for it in items if not it.get("city") or not settlement or _same_city(it["city"], settlement)]
+
+
+def describe_fetch_error(e):
+    """User-facing (Hebrew) message for a fetch failure."""
+    if isinstance(e, AccessDenied):
+        minutes = max(1, int((e.retry_at - time.monotonic()) / 60))
+        return (f"Yad2 חסם גישה אוטומטית — המערכת מכבדת זאת ולא עוקפת את החסימה. "
+                f"ניסיון חוזר בעוד כ-{minutes} דקות.")
+    if isinstance(e, RobotsDisallowed):
+        return "קובץ robots.txt של האתר אוסר על הבקשה הזו, ולכן היא לא נשלחה."
+    return f"שליפת הנתונים נכשלה: {e}"
+
+
+def fetch_multi_source(deal_type, city_code, settlement, neighborhood_id=None, enabled_sources=None):
     """
-    Fetch and parse posts from a Facebook group.
-    Returns list of parsed items with unified schema.
-    """
-    if not FACEBOOK_AVAILABLE:
-        print("[Facebook] Skipping - facebook-scraper not installed")
-        return []
-
-    group_id = group_id or FB_GROUP_ID
-    max_pages = max_pages or FB_MAX_PAGES
-
-    if not group_id:
-        print("[Facebook] No group ID provided")
-        return []
-
-    try:
-        print(f"[Facebook] Fetching group {group_id}, max {max_pages} pages...")
-
-        # Check if cookies are available
-        if not FB_COOKIES:
-            print("[Facebook] Warning: No authentication cookies found.")
-            print("[Facebook] Using mock data for testing. Create fb_cookies.json for real scraping.")
-
-            # Use mock data for testing
-            try:
-                from mock_facebook_data import MOCK_FACEBOOK_POSTS
-                items = []
-                for post in MOCK_FACEBOOK_POSTS:
-                    parsed = facebook_parser.parse_post(post)
-                    if parsed:
-                        items.append(parsed)
-                print(f"[Facebook] Returning {len(items)} mock items for testing")
-                return items
-            except Exception as e:
-                print(f"[Facebook] Mock data failed: {e}")
-                return []
-
-        t_start = time.time()
-
-        # Fetch posts from Facebook group with cookies
-        posts = []
-        for post in get_posts(
-            group=group_id,
-            pages=max_pages,
-            timeout=FB_TIMEOUT,
-            cookies=FB_COOKIES,
-            options={"comments": False, "reactors": False, "allow_extra_requests": False}
-        ):
-            posts.append(post)
-
-        # Parse posts into unified schema
-        items = facebook_parser.parse_posts_batch(posts)
-
-        elapsed = round(time.time() - t_start, 1)
-        print(f"[Facebook] Fetched {len(posts)} posts, parsed {len(items)} valid listings in {elapsed}s")
-
-        return items
-
-    except Exception as e:
-        print(f"[Facebook] Error fetching group: {e}")
-        return []
-
-
-def fetch_multi_source(deal_type, city_code, min_price, max_price, neighborhood_id=None, fb_group_id=None, enabled_sources=None):
-    """
-    Fetch listings from multiple sources in parallel (Yad2 + Facebook).
-    Returns dict with results and errors from each source.
-
-    Args:
-        enabled_sources: list of sources to fetch from (["yad2", "facebook"]). Default: both.
+    Collect listings from all enabled sources.
+    Returns dict with per-source items and user-facing error messages.
     """
     if enabled_sources is None:
         enabled_sources = ["yad2", "facebook"]
 
-    results = {
-        "yad2": [],
-        "facebook": [],
-        "errors": {},
-    }
+    results = {"yad2": [], "facebook": [], "errors": {}, "yad2_total_pages": 0, "yad2_pages_fetched": 0}
 
-    # Use ThreadPoolExecutor for source-level parallelism
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        futures = {}
+    if "yad2" in enabled_sources:
+        try:
+            items, total_pages, pages_fetched = fetch_all_yad2_pages(deal_type, city_code, neighborhood_id)
+            for item in items:
+                item["source"] = "yad2"
+            results["yad2"] = items
+            results["yad2_total_pages"] = total_pages
+            results["yad2_pages_fetched"] = pages_fetched
+        except Exception as e:
+            print(f"[yad2] Error: {e}")
+            results["errors"]["yad2"] = describe_fetch_error(e)
 
-        # Submit Yad2 fetch (if enabled)
-        if "yad2" in enabled_sources:
-            yad2_future = pool.submit(fetch_all_yad2_pages, deal_type, city_code, min_price, max_price, neighborhood_id)
-            futures[yad2_future] = "yad2"
-
-        # Submit Facebook fetch (if enabled and available)
-        if "facebook" in enabled_sources and FACEBOOK_AVAILABLE and fb_group_id:
-            fb_future = pool.submit(fetch_facebook_group, fb_group_id)
-            futures[fb_future] = "facebook"
-
-        # Collect results as they complete
-        for future in as_completed(futures):
-            source = futures[future]
-            try:
-                if source == "yad2":
-                    items, total_pages = future.result()
-                    # Add source field to Yad2 items
-                    for item in items:
-                        item["source"] = "yad2"
-                    results["yad2"] = items
-                    results["yad2_total_pages"] = total_pages
-                elif source == "facebook":
-                    items = future.result()
-                    # Source field already added by parser
-                    results["facebook"] = items
-            except Exception as e:
-                print(f"[{source}] Error: {e}")
-                results["errors"][source] = str(e)
+    if "facebook" in enabled_sources:
+        results["facebook"] = get_facebook_items(settlement)
 
     return results
 
@@ -449,10 +216,17 @@ def remove_duplicates(items):
     return result
 
 
-def filter_items(items, min_sqm=None, max_sqm=None, neighborhood=None):
-    """Filter items by sqm range and/or neighborhood (substring match)."""
+def filter_items(items, min_sqm=None, max_sqm=None, neighborhood=None, min_price=0, max_price=DEFAULT_MAX_PRICE):
+    """Filter items by price range, sqm range and/or neighborhood (substring match)."""
+    price_filtered = min_price > 0 or max_price < DEFAULT_MAX_PRICE
     filtered = []
     for item in items:
+        # price filter (done locally: Yad2's robots.txt disallows the price= parameter)
+        if price_filtered:
+            price = parse_price(item.get("price"))
+            if price is None or price < min_price or price > max_price:
+                continue
+
         # sqm filter
         sqm = item.get("squareMeters")
         if min_sqm is not None or max_sqm is not None:
@@ -468,8 +242,9 @@ def filter_items(items, min_sqm=None, max_sqm=None, neighborhood=None):
                 continue
 
         # neighborhood filter (substring match for Hebrew)
+        # (imported Facebook posts have no structured neighborhood — match their text)
         if neighborhood:
-            item_nb = item.get("neighborhood") or ""
+            item_nb = item.get("neighborhood") or item.get("description") or ""
             if neighborhood not in item_nb:
                 continue
 
@@ -751,7 +526,7 @@ def realestate_search():
     deal_type = request.args.get("dealType", "rent")
     settlement = request.args.get("settlement", "")
     min_price = request.args.get("minPrice", "0")
-    max_price = request.args.get("maxPrice", "100000000")
+    max_price = request.args.get("maxPrice", str(DEFAULT_MAX_PRICE))
     min_sqm_str = request.args.get("minSqm", "")
     max_sqm_str = request.args.get("maxSqm", "")
     neighborhood = request.args.get("neighborhood", "").strip()
@@ -783,9 +558,6 @@ def realestate_search():
 
     neighborhood_id = resolve_neighborhood_yad2_id(neighborhood) if neighborhood else None
 
-    # Get Facebook group ID from request or environment
-    fb_group_id = request.args.get("fbGroupId", FB_GROUP_ID)
-
     # Get enabled sources from request (comma-separated)
     sources_param = request.args.get("sources", "yad2,facebook")
     enabled_sources = [s.strip() for s in sources_param.split(",") if s.strip()]
@@ -794,13 +566,14 @@ def realestate_search():
 
     # Fetch from multiple sources in parallel
     try:
-        source_results = fetch_multi_source(deal_type, city_code, min_price, max_price, neighborhood_id, fb_group_id, enabled_sources)
+        source_results = fetch_multi_source(deal_type, city_code, settlement, neighborhood_id, enabled_sources)
     except Exception as e:
         return jsonify({"error": f"Failed to fetch data: {e}"}), 502
 
     # Merge all items from all sources
     items = source_results["yad2"] + source_results["facebook"]
     total_pages = source_results.get("yad2_total_pages", 0)
+    pages_fetched = source_results.get("yad2_pages_fetched", 0)
 
     # Track source counts before filtering
     source_counts = {
@@ -811,13 +584,14 @@ def realestate_search():
     # If both sources failed, return error
     if not items and source_results["errors"]:
         return jsonify({
-            "error": "All sources failed",
+            "error": " · ".join(source_results["errors"].values()),
             "errors": source_results["errors"]
         }), 502
 
     raw_count = len(items)
     items = remove_duplicates(items)
-    items = filter_items(items, min_sqm=min_sqm, max_sqm=max_sqm, neighborhood=neighborhood)
+    items = filter_items(items, min_sqm=min_sqm, max_sqm=max_sqm, neighborhood=neighborhood,
+                         min_price=min_price, max_price=max_price)
 
     items = compute_price_stats(items)
     fetch_time = round(time.time() - t_start, 1)
@@ -851,6 +625,7 @@ def realestate_search():
         "search_id": search_id,
         "items": items,
         "total_pages": total_pages,
+        "pages_fetched": pages_fetched,
         "fetchTime": fetch_time,
         "avgSampleCount": avg_sample_count,
         "sources": source_counts,
@@ -880,15 +655,11 @@ def realestate_update():
     neighborhood_id = resolve_neighborhood_yad2_id(params.get("neighborhood", ""))
 
     try:
-        new_items, total_pages = fetch_all_yad2_pages(
-            params["dealType"], params["cityCode"],
-            params["minPrice"], params["maxPrice"],
-            neighborhood_id,
-        )
-    except RuntimeError as e:
-        return jsonify({"error": str(e)}), 502
+        new_items, total_pages, _ = fetch_all_yad2_pages(params["dealType"], params["cityCode"], neighborhood_id)
     except Exception as e:
-        return jsonify({"error": f"Failed to fetch data from Yad2: {e}"}), 502
+        return jsonify({"error": describe_fetch_error(e)}), 502
+    for item in new_items:
+        item["source"] = "yad2"
 
     new_items = remove_duplicates(new_items)
     new_items = filter_items(
@@ -896,6 +667,8 @@ def realestate_update():
         min_sqm=params.get("minSqm"),
         max_sqm=params.get("maxSqm"),
         neighborhood=params.get("neighborhood", ""),
+        min_price=params.get("minPrice", 0),
+        max_price=params.get("maxPrice", DEFAULT_MAX_PRICE),
     )
     changed_items = detect_changes(doc["items"], new_items)
 
@@ -938,11 +711,32 @@ def realestate_cancel():
     return "", 204
 
 
-@app.route("/api/rotate", methods=["POST"])
-def manual_rotate():
-    """Manually trigger proxy IP rotation."""
-    threading.Thread(target=rotate_proxy_ip, daemon=True).start()
-    return jsonify({"status": "rotation started"})
+@app.route("/api/fetcher/status")
+def fetcher_status():
+    """Compliance/health view of the polite fetcher: rate limits, cache, blocks."""
+    return jsonify(fetcher.status())
+
+
+@app.route("/api/facebook/imports", methods=["GET"])
+def facebook_list_imports():
+    return jsonify(facebook_imports.list_imports())
+
+
+@app.route("/api/facebook/imports", methods=["POST"])
+def facebook_add_import():
+    """Import a Facebook post the user pasted: {"text": "...", "url": "..."}."""
+    body = request.get_json(silent=True) or {}
+    item, error = facebook_imports.import_post(body.get("text", ""), body.get("url", ""))
+    if error:
+        return jsonify({"error": error}), 422
+    return jsonify(item), 201
+
+
+@app.route("/api/facebook/imports/<token>", methods=["DELETE"])
+def facebook_delete_import(token):
+    if not facebook_imports.delete_import(token):
+        return jsonify({"error": "not found"}), 404
+    return "", 204
 
 
 # ---------------------------------------------------------------------------
@@ -961,20 +755,13 @@ def fetch_listing_description(token):
         return _description_cache[token]
 
     url = f"https://www.yad2.co.il/realestate/item/{token}"
-    session = get_yad2_session()
     try:
-        resp = session.get(url, timeout=20)
-    except Exception:
-        reset_yad2_session()
-        session = get_yad2_session()
-        resp = session.get(url, timeout=20)
-
-    match = re.search(r'__NEXT_DATA__[^>]*>(.*?)</script>', resp.text, re.DOTALL)
-    if not match:
+        next_data = fetch_next_data(url)
+    except (FetchError, ValueError) as e:
+        print(f"[Analyze] Could not fetch listing {token}: {e}")
         return None
 
     try:
-        next_data = json.loads(match.group(1))
         page_props = next_data.get("props", {}).get("pageProps", {})
         # Try multiple paths where description might live
         item_data = page_props.get("itemData", {})
@@ -1129,15 +916,9 @@ def extract_yad2_listing(url):
 
         item_id = match.group(1)
 
-        # Fetch the listing details using our existing Yad2 session
-        session = get_yad2_session()
+        # Fetched politely: if robots.txt or the site refuses, fall back to address parsing
         api_url = f"https://api.yad2.co.il/realestate/item/{item_id}"
-
-        resp = session.get(api_url, timeout=10)
-        if resp.status_code != 200:
-            return None
-
-        data = resp.json()
+        data = fetcher.get(api_url).json()
         if not data.get("data"):
             return None
 
@@ -1467,22 +1248,5 @@ def generate_insights(property_data, statistics):
     return " ".join(insights)
 
 
-# ---------------------------------------------------------------------------
-# Periodic proxy rotation (every ROTATE_INTERVAL_MIN minutes)
-# ---------------------------------------------------------------------------
-ROTATE_INTERVAL_MIN = int(os.environ.get("ROTATE_INTERVAL", "30"))
-
-
-def _periodic_rotation():
-    """Background loop that rotates the proxy IP periodically."""
-    while True:
-        time.sleep(ROTATE_INTERVAL_MIN * 60)
-        print(f"[Rotate] Periodic rotation (every {ROTATE_INTERVAL_MIN} min)")
-        rotate_proxy_ip()
-
-
 if __name__ == "__main__":
-    t = threading.Thread(target=_periodic_rotation, daemon=True)
-    t.start()
-    print(f"[Rotate] Periodic rotation enabled every {ROTATE_INTERVAL_MIN} min")
     app.run(host="0.0.0.0", port=8181)

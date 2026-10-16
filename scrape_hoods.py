@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
-"""Scrape all neighborhoods from Yad2 address-master API."""
-from curl_cffi import requests as cfreq
-import json, time
+"""Fetch all neighborhoods from Yad2 address-master API (politely: robots.txt, rate limit)."""
+import json
+from urllib.parse import urlencode
 
-session = cfreq.Session(impersonate='chrome')
-session.get('https://www.yad2.co.il')
-time.sleep(2)
+from polite_fetcher import FetchError, PoliteFetcher
 
+fetcher = PoliteFetcher(min_interval=2.0, cache_ttl=0)
 base = 'https://gw.yad2.co.il/address-master'
+
+
+def get_json(path, params):
+    return fetcher.get(f"{base}{path}?{urlencode(params)}").json()
+
 
 # Load existing data if available
 try:
@@ -21,8 +25,7 @@ except:
     hood_to_city = {}
 
 # Get city list
-r = session.get(base + '/cities', params={'limit': '2000'}, timeout=15)
-cities = r.json()['data']['data']
+cities = get_json('/cities', {'limit': '2000'})['data']['data']
 name_to_id = {c.get('city_heb', ''): c.get('city_id', '') for c in cities}
 
 remaining = [
@@ -52,16 +55,7 @@ for city_name in remaining:
             continue
 
     try:
-        r = session.get(
-            base + '/hoods',
-            params={'city_id': cid, 'limit': '200', 'result_type': 'extended'},
-            timeout=15
-        )
-        if r.status_code != 200:
-            print(f"  {city_name_actual}: HTTP {r.status_code}")
-            time.sleep(5)
-            continue
-        hoods = r.json().get('data', {}).get('data', [])
+        hoods = get_json('/hoods', {'city_id': cid, 'limit': '200', 'result_type': 'extended'}).get('data', {}).get('data', [])
         seen = set()
         unique = []
         for h in hoods:
@@ -73,10 +67,8 @@ for city_name in remaining:
                 hood_to_city[hn] = {'city': city_name_actual, 'city_id': cid, 'hood_id': hi}
         city_to_hoods[city_name_actual] = unique
         print(f"  {city_name_actual}: {len(unique)} hoods")
-        time.sleep(1.5)
-    except Exception as e:
+    except FetchError as e:
         print(f"  {city_name_actual}: ERR {e}")
-        time.sleep(5)
 
 # Save
 with open('neighborhood_to_city.json', 'w', encoding='utf-8') as f:

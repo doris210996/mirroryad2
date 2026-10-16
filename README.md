@@ -1,58 +1,49 @@
 # Yad 1.5 — Smart Filtered Real Estate
 
-A real-estate search dashboard that aggregates listings from multiple sources (Yad2 + Facebook groups) with advanced filtering, price analytics, and automated proxy rotation to avoid bot detection.
+A real-estate search dashboard that aggregates listings from Yad2 and manually imported Facebook posts, with advanced filtering and price analytics. All automated fetching goes through a **polite, compliant fetcher**: it follows robots.txt, paces its requests, identifies itself honestly, and never tries to get around bot protection.
 
 ## Architecture
 
 ```
-Browser  -->  Flask (port 8181)  -->  SSH SOCKS tunnel (port 1080)  -->  GCE VM  -->  Yad2
-                  |
-                  +-- rotate_proxy.sh (stop/start VM for fresh IP)
+Browser  -->  Flask (port 8181)  -->  PoliteFetcher  -->  Yad2
+                  |                    (robots.txt, rate limit, cache,
+                  |                     backoff, circuit breaker)
+                  +-- fb_imports.json  (Facebook posts pasted by the user)
 ```
 
 ### Stack
 
 - **Frontend:** Single-page HTML (`index.html`) with Inter font, orange-themed dark UI
-- **Backend:** Flask + `curl_cffi` (Chrome/Safari TLS fingerprint impersonation)
-- **Proxy:** GCE `e2-micro` VM with SSH SOCKS5 tunnel
+- **Backend:** Flask + `requests` via `polite_fetcher.py`
 - **Database:** MongoDB (optional — graceful fallback without it)
 
 ### Files
 
 | File | Purpose |
 |------|---------|
-| `server.py` | Flask app, multi-source aggregation, price stats, proxy rotation |
+| `server.py` | Flask app, multi-source aggregation, price stats |
+| `polite_fetcher.py` | Compliant HTTP client: robots.txt (RFC 9309), per-host rate limit, cache, Retry-After, circuit breaker |
+| `facebook_imports.py` | Stores Facebook posts the user pastes in (parsed by `facebook_parser.py`) |
 | `facebook_parser.py` | Facebook post parser — extracts structured data from unstructured Hebrew text |
-| `index.html` | UI — search form, listing cards, source badges, particle background |
-| `rotate_proxy.sh` | Shell script to rotate the proxy VM's IP |
+| `index.html` | UI — search form, Facebook import panel, listing cards, source badges |
+| `tests/` | Unit tests (`python -m unittest discover -s tests`) |
 
 ---
 
 ## Multi-Source Aggregation
 
-The app now aggregates listings from multiple sources in parallel:
-
 ### Sources
 
-1. **Yad2** — Israel's largest real estate platform (structured data)
-2. **Facebook Groups** — Community groups with direct landlord listings (unstructured text)
-
-### Parallel Fetching
-
-Both sources are fetched concurrently using `ThreadPoolExecutor` with 2 source-level workers:
+1. **Yad2** — Israel's largest real estate platform (structured data), fetched politely
+2. **Facebook** — posts the user copies from a group and pastes into the "ייבוא פוסט מפייסבוק" panel. Automated Facebook scraping (with logged-in session cookies) was removed because it breaks Meta's Terms of Service.
 
 ```
 /api/realestate/search
-  ├─→ fetch_yad2_source() [4 concurrent page workers]
-  └─→ fetch_facebook_source() [sequential HTTP scraping]
+  ├─→ fetch_all_yad2_pages()   [sequential, paced by PoliteFetcher]
+  └─→ get_facebook_items()     [imported posts matching the city]
 
-Results merged → Unified filtering → Combined dataset
+Results merged → Unified filtering (price, sqm, neighborhood) → Combined dataset
 ```
-
-**Performance:**
-- Yad2 alone: ~10-15s (20 pages, concurrent)
-- Facebook alone: ~5-10s (5 pages, HTTP)
-- **Parallel execution: ~15-20s** (max of both + merge)
 
 ### Facebook Parser
 
@@ -87,8 +78,8 @@ All items include a `source` field (`"yad2"` or `"facebook"`) for attribution:
 ### Error Handling
 
 - If one source fails, return results from the other
-- Errors are included in response: `{"errors": {"facebook": "Connection timeout"}}`
-- UI displays error messages in info bar
+- Errors are user-facing Hebrew messages: `{"errors": {"yad2": "Yad2 חסם גישה אוטומטית — ..."}}`
+- UI displays the messages in the info bar
 
 ---
 
@@ -97,8 +88,8 @@ All items include a `source` field (`"yad2"` or `"facebook"`) for attribution:
 ### How a search works
 
 1. User submits filters: deal type, city, neighborhood, price range, sqm range
-2. Server fetches **all pages** from Yad2 concurrently (4 workers, capped at 20 pages)
-3. Results are deduplicated, then filtered server-side by neighborhood and sqm range
+2. Server fetches Yad2 result pages one at a time through the polite fetcher (capped at `YAD2_MAX_PAGES`, default 10); repeat searches within 10 minutes are served from cache
+3. Results are deduplicated, then filtered server-side by price, sqm range and neighborhood
 4. Price stats are computed and attached to each listing
 5. JSON response returned to the browser
 
@@ -108,22 +99,9 @@ All items include a `source` field (`"yad2"` or `"facebook"`) for attribution:
 |--------|------|----------|
 | Deal type | `rent` / `forsale` | Passed to Yad2 URL |
 | City | Select dropdown | Mapped to Yad2 city code via `CITY_CODES` dict |
-| Neighborhood | Text input | Substring match against listing's neighborhood field (Hebrew) |
-| Min/Max price | Number | Passed to Yad2 URL (server-side filtering by Yad2) |
+| Neighborhood | Text input | Yad2 neighborhood ID in the URL; substring match on neighborhood (or post text for Facebook) |
+| Min/Max price | Number | Filtered locally in `filter_items()` — Yad2's robots.txt disallows the `price=` URL parameter |
 | Min/Max sqm | Number | Post-fetch filtering in `filter_items()` |
-
-### Concurrent page fetching
-
-`fetch_all_yad2_pages()` fetches page 1 to discover `totalPages`, then dispatches remaining pages (up to `MAX_PAGES=20`) across a `ThreadPoolExecutor` with `MAX_WORKERS=4`. Each worker thread uses its own `curl_cffi` session (thread-local) with a rotated browser fingerprint.
-
-A `PAGE_DELAY=0.15s` stagger between thread launches prevents burst traffic.
-
-**Typical performance:**
-
-| City size | Pages | Time |
-|-----------|-------|------|
-| Small (Eilat) | ~8 | ~10s |
-| Large (Tel Aviv) | 20 (capped) | ~15s |
 
 ---
 
@@ -166,62 +144,36 @@ Comparison uses neighborhood avg if available, else city avg.
 
 ---
 
-## Anti-Bot & Proxy System
+## Compliant Fetching (`polite_fetcher.py`)
 
-Yad2 uses Radware Bot Manager (ShieldSquare) which blocks scrapers via:
-- TLS fingerprinting (solved by `curl_cffi` impersonation)
-- IP-based rate limiting / captcha (solved by proxy rotation)
+Earlier versions evaded Yad2's Radware Bot Manager with spoofed browser TLS fingerprints, a proxy VM whose IP was rotated whenever a captcha appeared, and Facebook session cookies. All of that is gone. The fetcher now does the opposite: it works **with** the site's rules.
 
-### Browser fingerprint rotation
+| Behavior | Details |
+|----------|---------|
+| **Honest identity** | `User-Agent: MirrorYad2Bot/2.0 (+<info url>; <contact>)`. No browser impersonation, no proxy rotation, no reused login cookies. |
+| **robots.txt** | Full RFC 9309 matching (`*` and `$` wildcards, longest match wins, specific user-agent group over `*`). Cached ≤ 24h. A missing robots.txt (4xx) allows all; an unreachable one (5xx / network) disallows all. Disallowed URLs are never requested. |
+| **Rate limiting** | One request per host every `FETCHER_MIN_INTERVAL` seconds (default 2), or the site's `Crawl-delay` if larger. Shared across threads. |
+| **Caching** | Successful responses are reused for `FETCHER_CACHE_TTL` seconds (default 600), so refreshing a search doesn't hit the site again. |
+| **Backoff** | HTTP 429/503 honour `Retry-After` (bounded retries, exponential backoff with jitter). A `Retry-After` longer than 60s pauses the host instead. |
+| **Circuit breaker** | HTTP 401/403 or a bot-challenge/captcha page means "no": the host is paused for `FETCHER_BLOCK_COOLDOWN` seconds (default 1800) and the UI shows why. It is never worked around. |
 
-Sessions cycle through `["safari", "safari_ios", "edge99", "chrome"]`. The main session and each worker thread get different fingerprints via a rotating counter.
+`GET /api/fetcher/status` shows the live state per host (requests, cache hits, robots refusals, denials, block countdown).
 
-### GCE VM proxy
-
-All Yad2 traffic routes through a SOCKS5 tunnel to a GCE VM (`yad2-proxy`, `e2-micro`, `us-central1-a`). The VM's ephemeral IP changes on each stop/start cycle.
-
-**Setup:**
-
-```bash
-# Create VM (one-time)
-gcloud compute instances create yad2-proxy \
-  --machine-type=e2-micro --zone=us-central1-a \
-  --image-family=debian-12 --image-project=debian-cloud
-
-# Create SSH SOCKS tunnel
-gcloud compute ssh yad2-proxy --zone=us-central1-a \
-  --ssh-flag="-D 1080 -f -N -4"
-```
-
-### IP rotation (`rotate_proxy.sh`)
-
-The rotation script:
-1. Kills the existing SSH tunnel
-2. Stops the VM (releases the IP)
-3. Starts the VM (gets a new ephemeral IP)
-4. Waits for SSH readiness
-5. Re-establishes the SOCKS tunnel
-6. Verifies connectivity via httpbin.org
-
-Takes ~60-90 seconds per rotation.
-
-### Three rotation triggers
-
-| Trigger | How it works |
-|---------|-------------|
-| **Periodic** | Background thread rotates every `ROTATE_INTERVAL` minutes (default: 30). Configurable via env var. |
-| **Reactive** | When `fetch_yad2_page()` detects a ShieldSquare captcha, it triggers rotation automatically. A 120-second cooldown prevents rapid re-triggers. |
-| **Manual** | `POST /api/rotate` triggers immediate rotation. |
+> **Legal note:** being polite is necessary but not sufficient. Yad2's Terms of Use govern automated access to its content regardless of robots.txt. For production use, get written permission or a data agreement from Yad2. In practice Yad2's bot protection may challenge an honest bot — especially from cloud/datacenter IPs — and this app will then show the block instead of results.
 
 ### Configuration
 
 | Env var | Default | Description |
 |---------|---------|-------------|
-| `YAD2_PROXY` | `socks5://127.0.0.1:1080` | SOCKS proxy address for Yad2 |
-| `ROTATE_INTERVAL` | `30` | Minutes between periodic IP rotations |
-| `FB_GROUP_ID` | `457465901082882` | Facebook group ID to scrape |
-| `FB_MAX_PAGES` | `5` | Maximum pages to fetch from Facebook (~10 posts per page) |
-| `FB_TIMEOUT` | `60` | Timeout in seconds for Facebook scraping |
+| `FETCHER_CONTACT` | `` | Contact (e-mail) included in the User-Agent — set this |
+| `FETCHER_INFO_URL` | repo URL | Info URL included in the User-Agent |
+| `FETCHER_USER_AGENT` | — | Override the whole User-Agent |
+| `FETCHER_MIN_INTERVAL` | `2.0` | Seconds between requests to the same host |
+| `FETCHER_CACHE_TTL` | `600` | Seconds to cache successful responses |
+| `FETCHER_BLOCK_COOLDOWN` | `1800` | Seconds to pause a host after it refuses access |
+| `YAD2_MAX_PAGES` | `10` | Max Yad2 result pages per search |
+| `FB_IMPORTS_FILE` | `fb_imports.json` | Where imported Facebook posts are stored |
+| `FB_MOCK` | `` | `1` adds sample Facebook posts for local testing |
 | `MONGO_URI` | `mongodb://localhost:27017/realestate` | MongoDB connection string |
 | `LLM_SERVICE_URL` | `http://127.0.0.1:8282` | LLM service URL for sentiment analysis |
 | `GOVMAP_API_TOKEN` | `` | GovMap API token for deep analysis real data (optional) |
@@ -271,9 +223,9 @@ Takes ~60-90 seconds per rotation.
 | `minSqm` | no | Filter by minimum square meters |
 | `maxSqm` | no | Filter by maximum square meters |
 | `neighborhood` | no | Substring match against neighborhood name |
-| `fbGroupId` | no | Facebook group ID (overrides `FB_GROUP_ID` env var) |
+| `sources` | no | Comma-separated: `yad2`, `facebook` (default both) |
 
-Returns: `{ search_id, items[], total_pages, sources: {yad2, facebook}, errors: {}, fetchTime, avgSampleCount }`
+Returns: `{ search_id, items[], total_pages, pages_fetched, sources: {yad2, facebook}, errors: {}, fetchTime, avgSampleCount }`
 
 ### `GET /api/realestate/update`
 
@@ -289,9 +241,17 @@ Re-fetches all pages, applies same filters, detects new/updated listings.
 |-------|----------|-------------|
 | `searchId` | yes | ID to cancel |
 
-### `POST /api/rotate`
+### `POST /api/facebook/imports`
 
-Triggers manual proxy IP rotation. Returns `{ status: "rotation started" }`.
+Body: `{ "text": "<post text>", "url": "<facebook post link, optional>" }`. Returns the parsed listing (201), or 422 with a Hebrew message if no listing/price was found.
+
+### `GET /api/facebook/imports` · `DELETE /api/facebook/imports/<linkToken>`
+
+List or remove imported posts.
+
+### `GET /api/fetcher/status`
+
+Fetcher state per host: request count, cache hits, robots refusals, denials and block countdown.
 
 ---
 
@@ -301,17 +261,14 @@ Triggers manual proxy IP rotation. Returns `{ status: "rotation started" }`.
 # Install dependencies
 pip install -r requirements.txt
 
-# Start the server (proxy tunnel must be active for Yad2)
-python server.py
+# Start the server (set a contact so site operators can reach you)
+FETCHER_CONTACT=you@example.com python server.py
 
-# With custom Facebook group
-FB_GROUP_ID=123456789 python server.py
+# Slower pacing / longer cache
+FETCHER_MIN_INTERVAL=5 FETCHER_CACHE_TTL=1800 python server.py
 
-# With custom rotation interval (minutes)
-ROTATE_INTERVAL=15 python server.py
-
-# Without proxy (direct connection to Yad2)
-YAD2_PROXY="" python server.py
+# Run the tests
+python -m unittest discover -s tests
 ```
 
 Server runs on port `8181`.
@@ -319,6 +276,5 @@ Server runs on port `8181`.
 ### Requirements
 
 - Python 3.8+
-- Dependencies: `flask`, `pymongo`, `curl_cffi`, `facebook-scraper`
+- Dependencies: `flask`, `pymongo`, `requests`
 - Optional: MongoDB for change tracking
-- Optional: SSH tunnel to GCE VM for Yad2 proxy rotation

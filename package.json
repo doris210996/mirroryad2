@@ -1,7 +1,7 @@
 {
   "name": "app",
   "version": "1.0.0",
-  "description": "A real-estate search dashboard that aggregates listings from multiple sources (Yad2 + Facebook groups) with advanced filtering, price analytics, and automated proxy rotation to avoid bot detection.",
+  "description": "A real-estate search dashboard that aggregates listings from multiple sources (Yad2 + Facebook groups) with advanced filtering and price analytics, fetched politely (robots.txt, rate limits, no bot-detection evasion).",
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
